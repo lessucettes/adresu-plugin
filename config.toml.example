@@ -115,7 +115,7 @@
 #min_length_for_check   = 20 # Skip check for very short texts.
 #approved_cache_ttl     = "30m" # Cache duration for authors who pass the check.
 #approved_cache_size    = 10000
-# Special thresholds for similar languages. Example: allows Ukrainian if detected as Russian with low confidence.
+# Special thresholds for similar languages. Example: allows Russian if detected as Ukrainian.
 #[filters.language.primary_accept_threshold.ru]
 #uk = 0.0002
 #default = 0.018 # Default minimum confidence for a language to be accepted as Russian.
