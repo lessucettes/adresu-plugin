@@ -28,7 +28,7 @@ To install the plugin, clone the repository and build the binary from the source
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/adresu-plugin.git
+git clone https://github.com/lessucettes/adresu-plugin.git
 cd adresu-plugin
 
 # Build the binary
