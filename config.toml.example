@@ -147,11 +147,12 @@
 # --- Automatic Ban Filter (Autoban) ---
 #[filters.autoban]
 #enabled             = false
-#max_strikes         = 10   # Ban after this many rejected events...
+#max_strikes         = 10 # Ban after this many rejected events...
 #strike_window       = "1h" # ...if they occurred within this time window.
 #ban_duration        = "24h" # Duration of the automatic ban.
 #strikes_cache_size  = 10000
 #cooldown_cache_size = 1000
 #cooldown_duration   = "1m" # User won't get a new strike for this duration after receiving one.
+# ban_timeout         = "10s" # timeout for DB ban op (0/absent => fallback 5s)
 # List of filters whose rejections DO NOT result in a 'strike'.
 #exclude_filters_from_strikes = ["RateLimiterFilter", "FreshnessFilter"]

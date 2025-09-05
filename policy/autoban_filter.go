@@ -16,13 +16,14 @@ import (
 
 // AutoBanFilter automatically bans users who repeatedly trigger rejections.
 type AutoBanFilter struct {
-	mu      sync.Mutex
-	strikes *lru.LRU[string, *RejectionStats]
-	store   store.Store
-	cfg     *config.AutoBanFilterConfig // It now holds a reference to its config struct.
+	// Guard ALL access to LRU caches with this mutex (hashicorp lru is NOT thread-safe).
+	mu sync.Mutex
 
-	// A short-term cache to prevent counting new strikes immediately after a ban.
+	strikes         *lru.LRU[string, *RejectionStats]
 	banningCooldown *lru.LRU[string, struct{}]
+
+	store store.Store
+	cfg   *config.AutoBanFilterConfig
 }
 
 // RejectionStats stores the violation history for a pubkey.
@@ -31,12 +32,10 @@ type RejectionStats struct {
 	FirstStrikeTime time.Time
 }
 
-// NewAutoBanFilter now accepts a config struct, following the standard pattern.
+// NewAutoBanFilter wires dependencies and cache TTLs from config.
 func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) *AutoBanFilter {
-	// Use strike_window from config for cache TTL.
 	strikesCache := lru.NewLRU[string, *RejectionStats](cfg.StrikesCacheSize, nil, cfg.StrikeWindow)
-	// Cooldown cache for 1 minute.
-	cooldownCache := lru.NewLRU[string, struct{}](cfg.CooldownCacheSize, nil, time.Minute)
+	cooldownCache := lru.NewLRU[string, struct{}](cfg.CooldownCacheSize, nil, cfg.CooldownDuration)
 
 	return &AutoBanFilter{
 		store:           s,
@@ -55,27 +54,26 @@ func (f *AutoBanFilter) Check(ctx context.Context, event *nostr.Event, remoteIP 
 
 // HandleRejection is called when an event has been rejected by another filter.
 func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event, filterName string) {
-	// The first action is to check if the filter is enabled.
 	if !f.cfg.Enabled {
 		return
 	}
-
-	if len(f.cfg.ExcludeFilters) > 0 {
-		if slices.Contains(f.cfg.ExcludeFilters, filterName) {
-			return
-		}
+	if len(f.cfg.ExcludeFilters) > 0 && slices.Contains(f.cfg.ExcludeFilters, filterName) {
+		return
 	}
 
 	pubkey := event.PubKey
 
-	if _, onCooldown := f.banningCooldown.Get(pubkey); onCooldown {
-		return
-	}
+	var (
+		shouldBan        bool
+		finalStrikeCount int
+	)
 
+	// All LRU operations must be under the mutex.
 	f.mu.Lock()
-	defer f.mu.Unlock()
 
+	// Cooldown check (inside lock to avoid races).
 	if _, onCooldown := f.banningCooldown.Get(pubkey); onCooldown {
+		f.mu.Unlock()
 		return
 	}
 
@@ -85,30 +83,46 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 	} else {
 		stats.StrikeCount++
 	}
-
 	f.strikes.Add(pubkey, stats)
 
-	// Use MaxStrikes from the config.
 	if stats.StrikeCount >= f.cfg.MaxStrikes {
-		slog.Warn("Auto-banning user for repeated violations",
-			"pubkey", pubkey,
-			"strike_count", stats.StrikeCount,
-			"ban_duration", f.cfg.BanDuration)
-
-		go f.banUser(ctx, pubkey)
-
+		shouldBan = true
+		finalStrikeCount = stats.StrikeCount
+		// Remove strikes tracking and immediately add cooldown to close race windows.
 		f.strikes.Remove(pubkey)
 		f.banningCooldown.Add(pubkey, struct{}{})
+	}
+
+	f.mu.Unlock()
+
+	// Do logging/spawning outside of the lock.
+	if shouldBan {
+		slog.Warn("Auto-banning user for repeated violations",
+			"pubkey", pubkey,
+			"strike_count", finalStrikeCount,
+			"ban_duration", f.cfg.BanDuration,
+			"by_filter", filterName,
+		)
+		go f.banUser(pubkey)
 	}
 }
 
 // banUser performs the ban operation in a separate goroutine.
-func (f *AutoBanFilter) banUser(ctx context.Context, pubkey string) {
-	banCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+// Uses configurable timeout; falls back to 5s if not set.
+func (f *AutoBanFilter) banUser(pubkey string) {
+	timeout := f.cfg.BanTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	banCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Use BanDuration from the config.
 	if err := f.store.BanAuthor(banCtx, pubkey, f.cfg.BanDuration); err != nil {
 		slog.Error("Failed to auto-ban author", "pubkey", pubkey, "error", err)
+		// If ban failed, remove cooldown so strikes keep accruing.
+		f.mu.Lock()
+		f.banningCooldown.Remove(pubkey)
+		f.mu.Unlock()
 	}
 }

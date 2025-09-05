@@ -210,6 +210,7 @@ type AutoBanFilterConfig struct {
 	StrikesCacheSize  int           `toml:"strikes_cache_size"`
 	CooldownCacheSize int           `toml:"cooldown_cache_size"`
 	CooldownDuration  time.Duration `toml:"cooldown_duration"`
+	BanTimeout        time.Duration `toml:"ban_timeout"`
 	ExcludeFilters    []string      `toml:"exclude_filters_from_strikes"`
 }
 
@@ -421,6 +422,10 @@ func (c *Config) validate() error {
 		}
 		if ab.CooldownDuration <= 0 {
 			return errors.New("filters.autoban.cooldown_duration must be a positive duration")
+		}
+		// BanTimeout: allow 0 (means use internal default), but forbid negatives.
+		if ab.BanTimeout < 0 {
+			return errors.New("filters.autoban.ban_timeout must not be negative")
 		}
 	}
 
