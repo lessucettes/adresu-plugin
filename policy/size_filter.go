@@ -33,7 +33,17 @@ func (f *SizeFilter) Name() string { return "SizeFilter" }
 
 func (f *SizeFilter) Check(ctx context.Context, event *nostr.Event, remoteIP string) *Result {
 	f.mu.RLock()
-	defer f.mu.RUnlock()
+	maxSize := f.cfg.DefaultMaxSize
+	description := "default event"
+	if rule, ok := f.kindToRule[event.Kind]; ok {
+		maxSize = rule.MaxSize
+		description = rule.Description
+	}
+	f.mu.RUnlock()
+
+	if maxSize == 0 {
+		return Accept()
+	}
 
 	raw, err := json.Marshal(event)
 	if err != nil {
@@ -41,16 +51,8 @@ func (f *SizeFilter) Check(ctx context.Context, event *nostr.Event, remoteIP str
 		return Reject("internal: failed to process event")
 	}
 	size := len(raw)
-	var maxSize int
-	var description string
-	if rule, exists := f.kindToRule[event.Kind]; exists {
-		maxSize = rule.MaxSize
-		description = rule.Description
-	} else {
-		maxSize = f.cfg.DefaultMaxSize
-		description = "default event"
-	}
-	if maxSize > 0 && size > maxSize {
+
+	if size > maxSize {
 		slog.Warn("Rejecting oversized event",
 			"ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "kind", event.Kind,
 			"size", size, "limit", maxSize, "rule", description)
