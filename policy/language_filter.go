@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,11 +17,17 @@ import (
 )
 
 var (
-	globalDetectorOnce sync.Once
-	globalDetector     lingua.LanguageDetector
-	buildLookupOnce    sync.Once
-	languageLookupMap  map[string]lingua.Language
+	globalDetectorOnce  sync.Once
+	globalDetector      lingua.LanguageDetector
+	buildLookupOnce     sync.Once
+	languageLookupMap   map[string]lingua.Language
+	contentCleanerRegex *regexp.Regexp
 )
+
+func init() {
+	const cleanerPattern = `((https?|wss?)://|www\.|ww\.)[^\s/?.#-]+\S*|[a-zA-Z0-9.!$%&’+_\x60\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,64}|nostr:[a-z0-9]+|#\S+|[a-zA-Z]*[0-9]+[a-zA-Z0-9]*`
+	contentCleanerRegex = regexp.MustCompile(cleanerPattern)
+}
 
 // SafeApprovedCache wraps expirable LRU with a RWMutex since it is not goroutine-safe.
 type SafeApprovedCache struct {
@@ -83,14 +90,12 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 		allowedKinds[k] = struct{}{}
 	}
 
-	// --- NEW: Pre-processing threshold rules from config ---
 	thresholds := make(map[lingua.Language]map[lingua.Language]float64)
 	defaultThresholds := make(map[lingua.Language]float64)
 
 	for primaryStr, similarMap := range cfg.PrimaryAcceptThreshold {
 		primaryLang, ok := languageLookupMap[strings.ToLower(primaryStr)]
 		if !ok {
-			// This is a safeguard; validation in config.go should prevent this.
 			slog.Error("Primary language in threshold rules not found, skipping rule.", "lang", primaryStr)
 			continue
 		}
@@ -126,14 +131,13 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 func (f *LanguageFilter) Name() string { return "LanguageFilter" }
 
 func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP string) *Result {
-	// --- Step 1-4: Fast exit checks (unchanged) ---
+	// --- Fast exit checks ---
 	if !f.cfg.Enabled || len(f.allowedLangs) == 0 {
 		return Accept()
 	}
 	if _, ok := f.allowedKinds[event.Kind]; !ok {
 		return Accept()
 	}
-
 	if f.cfg.MinLengthForCheck > 0 && len(event.Content) < f.cfg.MinLengthForCheck {
 		return Accept()
 	}
@@ -143,13 +147,18 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 		}
 	}
 
-	// --- Step 5: Main logic ---
-	detectedLang, detected := f.detector.DetectLanguageOf(event.Content)
+	cleanedContent := contentCleanerRegex.ReplaceAllString(event.Content, "")
+	if len(cleanedContent) < f.cfg.MinLengthForCheck {
+		return Accept()
+	}
+
+	// --- Main logic ---
+	detectedLang, detected := f.detector.DetectLanguageOf(cleanedContent)
 	if !detected {
 		return Reject("blocked: language could not be determined")
 	}
 
-	// --- Step 5.1: Check if the detected language is in the main allow list ---
+	// --- Check if the detected language is in the main allow list ---
 	if _, isAllowed := f.allowedLangs[detectedLang]; isAllowed {
 		if f.approvedCache != nil {
 			f.approvedCache.Add(event.PubKey, struct{}{})
@@ -157,20 +166,15 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 		return Accept()
 	}
 
-	// --- Step 5.2 : If not directly allowed, check confidence against primary languages ---
+	// --- If not directly allowed, check confidence against primary languages ---
 	for primaryLang, similarLangsMap := range f.thresholds {
-		// Find the threshold: first for the specific detected language, then for "default".
 		threshold, hasRule := similarLangsMap[detectedLang]
 		if !hasRule {
 			threshold, hasRule = f.defaultThresholds[primaryLang]
 		}
-
-		// If a rule exists for this primary/detected pair...
 		if hasRule {
-			// ...compute confidence only when necessary.
-			confidence := f.detector.ComputeLanguageConfidence(event.Content, primaryLang)
+			confidence := f.detector.ComputeLanguageConfidence(cleanedContent, primaryLang)
 			if confidence > threshold {
-				// The old slog.Debug call is removed.
 				if f.approvedCache != nil {
 					f.approvedCache.Add(event.PubKey, struct{}{})
 				}
@@ -179,7 +183,7 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 		}
 	}
 
-	// --- Step 6: Reject if no rule was met ---
+	// --- Reject if no rule was met ---
 	return Reject(
 		fmt.Sprintf("blocked: language '%s' is not allowed", detectedLang.String()),
 		slog.String("detected_language", detectedLang.String()),
