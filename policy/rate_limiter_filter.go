@@ -100,8 +100,11 @@ func (f *RateLimiterFilter) Check(ctx context.Context, event *nostr.Event, remot
 		cacheKey := fmt.Sprintf("%s:%s", ruleDescription, userKey)
 		limiter := f.getLimiter(cacheKey, currentRate, currentBurst)
 		if !limiter.Allow() {
-			slog.Warn("Rate limit exceeded", "ip", remoteIP, "user_key", userKey, "event_id", event.ID, "rule", ruleDescription)
-			return Reject(fmt.Sprintf("blocked: rate limit exceeded for %s", ruleDescription))
+			return Reject(
+				fmt.Sprintf("blocked: rate limit exceeded for %s", ruleDescription),
+				slog.String("user_key", userKey),
+				slog.String("rule_description", ruleDescription),
+			)
 		}
 	}
 	return Accept()

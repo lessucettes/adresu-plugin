@@ -58,10 +58,11 @@ func (f *KeywordFilter) Check(ctx context.Context, event *nostr.Event, remoteIP 
 
 	for _, rule := range rules {
 		if rule.regex.MatchString(event.Content) {
-			slog.Info("Rejecting event due to forbidden keyword/regexp",
-				"ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID,
-				"match", rule.source, "rule", rule.description)
-			return Reject(fmt.Sprintf("blocked: content contains forbidden content ('%s')", rule.source))
+			return Reject(
+				fmt.Sprintf("blocked: content contains forbidden content ('%s')", rule.source),
+				slog.String("match", rule.source),
+				slog.String("rule_description", rule.description),
+			)
 		}
 	}
 

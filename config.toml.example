@@ -12,6 +12,18 @@
 # Log level can be: "debug", "info", "warn", "error".
 #level = "info"
 
+# Allows overriding the log level for rejections from specific filters.
+# By default, all rejections are logged as "warn".
+# This is useful to make "less important" rejections less noisy in the logs.
+#[log.rejection_levels]
+# Example: Rejections by KindFilter (disallowed kind) are a normal situation,
+# so we log them as "debug" to avoid cluttering the main log.
+#KindFilter = "debug"
+
+# Example: Rejections by FreshnessFilter (old events) are more informational
+# than a critical warning.
+#FreshnessFilter = "info"
+
 # --- Basic Service Settings ---
 #[database]
 # Path to the plugin's database file. It will be created automatically.

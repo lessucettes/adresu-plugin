@@ -102,6 +102,7 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 	languageDetector := policy.GetGlobalDetector()
 
 	pipeline := policy.NewPipeline(
+		cfg,
 		policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan),
 		policy.NewKindFilter(cfg.Policy.AllowedKinds, cfg.Policy.DeniedKinds),
 		policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor),

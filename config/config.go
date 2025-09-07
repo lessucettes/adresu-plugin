@@ -56,7 +56,8 @@ func (l LogLevel) ToSlogLevel() slog.Level {
 }
 
 type LogConfig struct {
-	Level LogLevel `toml:"level"`
+	Level           LogLevel            `toml:"level"`
+	RejectionLevels map[string]LogLevel `toml:"rejection_levels"`
 }
 
 type DBConfig struct {

@@ -47,16 +47,18 @@ func (f *SizeFilter) Check(ctx context.Context, event *nostr.Event, remoteIP str
 
 	raw, err := json.Marshal(event)
 	if err != nil {
-		slog.Error("Failed to marshal event for size check", "error", err, "event_id", event.ID, "ip", remoteIP)
+		slog.Error("Failed to marshal event for size check", "error", err, "event_id", event.ID)
 		return Reject("internal: failed to process event")
 	}
 	size := len(raw)
 
 	if size > maxSize {
-		slog.Warn("Rejecting oversized event",
-			"ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "kind", event.Kind,
-			"size", size, "limit", maxSize, "rule", description)
-		return Reject(fmt.Sprintf("blocked: event size %d bytes exceeds limit of %d for %s", size, maxSize, description))
+		return Reject(
+			fmt.Sprintf("blocked: event size %d bytes exceeds limit of %d for %s", size, maxSize, description),
+			slog.Int("size_bytes", size),
+			slog.Int("limit_bytes", maxSize),
+			slog.String("rule_description", description),
+		)
 	}
 	return Accept()
 }

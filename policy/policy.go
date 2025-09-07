@@ -3,6 +3,7 @@ package policy
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -14,16 +15,18 @@ const (
 
 // Result defines the outcome of a filter check.
 type Result struct {
-	Action  string
-	Message string
+	Action        string
+	Message       string
+	SpecificAttrs []slog.Attr
 }
 
 func Accept() *Result {
 	return &Result{Action: ActionAccept}
 }
 
-func Reject(msg string) *Result {
-	return &Result{Action: ActionReject, Message: msg}
+// Reject accepts optional slog.Attr for detailed logging.
+func Reject(msg string, attrs ...slog.Attr) *Result {
+	return &Result{Action: ActionReject, Message: msg, SpecificAttrs: attrs}
 }
 
 type Filter interface {

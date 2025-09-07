@@ -2,6 +2,7 @@
 package policy
 
 import (
+	"adresu-plugin/config"
 	"context"
 	"log/slog"
 	"runtime/debug"
@@ -10,11 +11,12 @@ import (
 )
 
 type Pipeline struct {
-	filters       []Filter
-	autoBanFilter *AutoBanFilter
+	filters         []Filter
+	autoBanFilter   *AutoBanFilter
+	rejectionLevels map[string]config.LogLevel
 }
 
-func NewPipeline(filters ...Filter) *Pipeline {
+func NewPipeline(cfg *config.Config, filters ...Filter) *Pipeline {
 	var abf *AutoBanFilter
 
 	for _, f := range filters {
@@ -25,8 +27,9 @@ func NewPipeline(filters ...Filter) *Pipeline {
 	}
 
 	return &Pipeline{
-		filters:       filters,
-		autoBanFilter: abf,
+		filters:         filters,
+		autoBanFilter:   abf,
+		rejectionLevels: cfg.Log.RejectionLevels,
 	}
 }
 
@@ -38,7 +41,7 @@ func (p *Pipeline) ProcessEvent(ctx context.Context, event *nostr.Event, remoteI
 			slog.Error("Panic recovered in filter pipeline",
 				"panic", r,
 				"event_id", event.ID,
-				"author", event.PubKey,
+				"pubkey", event.PubKey,
 				"stack", string(debug.Stack()),
 			)
 			result = Reject("internal: an unexpected error occurred in a filter")
@@ -47,39 +50,46 @@ func (p *Pipeline) ProcessEvent(ctx context.Context, event *nostr.Event, remoteI
 
 	for _, filter := range p.filters {
 		result = filter.Check(ctx, event, remoteIP)
-		if result.Action != "accept" {
+		if result.Action != ActionAccept {
+			// Standardized log attributes.
+			logAttrs := []slog.Attr{
+				slog.String("filter_name", filter.Name()),
+				slog.String("remote_ip", remoteIP),
+				slog.String("event_id", event.ID),
+				slog.Int("kind", event.Kind),
+				slog.String("pubkey", event.PubKey),
+				slog.String("reason", result.Message),
+			}
+
+			if len(result.SpecificAttrs) > 0 {
+				group := slog.Attr{
+					Key:   "details",
+					Value: slog.GroupValue(result.SpecificAttrs...),
+				}
+				logAttrs = append(logAttrs, group)
+			}
+
 			if dryRun {
-				slog.Info("Dry-run: Event would be rejected by filter",
-					"filter", filter.Name(),
-					"ip", remoteIP,
-					"event_id", event.ID,
-					"event_kind", event.Kind,
-					"author", event.PubKey,
-					"reason", result.Message,
-				)
+				slog.LogAttrs(ctx, slog.LevelInfo, "Dry-run: Event would be rejected", logAttrs...)
 				return Accept()
 			}
+
 			if p.autoBanFilter != nil {
 				p.autoBanFilter.HandleRejection(ctx, event, filter.Name())
 			}
-			logLevel := slog.LevelWarn
-			if filter.Name() == "KindFilter" {
-				logLevel = slog.LevelDebug
+
+			logLevel := slog.LevelWarn // Default to Warn
+			if level, ok := p.rejectionLevels[filter.Name()]; ok {
+				logLevel = level.ToSlogLevel() // Use configured level if present.
 			}
-			slog.Log(ctx, logLevel,
-				"Event rejected by filter",
-				"filter", filter.Name(),
-				"ip", remoteIP,
-				"event_id", event.ID,
-				"event_kind", event.Kind,
-				"author", event.PubKey,
-				"reason", result.Message,
-			)
+
+			slog.LogAttrs(ctx, logLevel, "Event rejected by filter", logAttrs...)
+
 			return result
 		}
 	}
 
-	slog.Debug("Event accepted by all filters", "event_id", event.ID, "author", event.PubKey)
+	slog.Debug("Event accepted by all filters", "event_id", event.ID, "pubkey", event.PubKey)
 	return Accept()
 }
 

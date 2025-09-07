@@ -57,9 +57,14 @@ func (f *EphemeralChatFilter) Check(ctx context.Context, event *nostr.Event, rem
 
 	if f.lastSeen != nil && cfg.raw.MinDelay > 0 {
 		now := time.Now()
-		if last, ok := f.lastSeen.Get(event.PubKey); ok && now.Sub(last) < cfg.raw.MinDelay {
-			slog.Info("Rejecting chat message due to anti-flood delay", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "delay", now.Sub(last))
-			return Reject("blocked: posting too frequently in chat")
+		if last, ok := f.lastSeen.Get(event.PubKey); ok {
+			delay := now.Sub(last)
+			if delay < cfg.raw.MinDelay {
+				return Reject("blocked: posting too frequently in chat",
+					slog.String("delay", delay.String()),
+					slog.String("limit", cfg.raw.MinDelay.String()),
+				)
+			}
 		}
 		f.lastSeen.Add(event.PubKey, now)
 	}
@@ -83,8 +88,10 @@ func (f *EphemeralChatFilter) Check(ctx context.Context, event *nostr.Event, rem
 		if letters > minLetters {
 			ratio := float64(caps) / float64(letters)
 			if ratio > cfg.raw.MaxCapsRatio {
-				slog.Info("Rejecting chat message due to excessive caps", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "ratio", ratio)
-				return Reject("blocked: excessive use of capital letters")
+				return Reject("blocked: excessive use of capital letters",
+					slog.Float64("caps_ratio", ratio),
+					slog.Float64("limit", cfg.raw.MaxCapsRatio),
+				)
 			}
 		}
 	}
@@ -100,18 +107,20 @@ func (f *EphemeralChatFilter) Check(ctx context.Context, event *nostr.Event, rem
 					count = 1
 				}
 				if count >= cfg.raw.MaxRepeatChars {
-					slog.Info("Rejecting chat message due to character repetition", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID)
-					return Reject("blocked: excessive character repetition")
+					return Reject("blocked: excessive character repetition",
+						slog.Int("repetitions", count),
+						slog.Int("limit", cfg.raw.MaxRepeatChars),
+					)
 				}
 			}
 		}
 	}
 	if cfg.wordRegex != nil && cfg.wordRegex.MatchString(content) {
-		slog.Info("Rejecting chat message due to long word", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID)
-		return Reject("blocked: message contains words that are too long")
+		return Reject("blocked: message contains words that are too long",
+			slog.Int("limit", cfg.raw.MaxWordLength),
+		)
 	}
 	if cfg.zalgoRegex != nil && cfg.zalgoRegex.MatchString(content) {
-		slog.Info("Rejecting chat message due to Zalgo text", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID)
 		return Reject("blocked: message contains Zalgo text")
 	}
 
@@ -121,12 +130,13 @@ func (f *EphemeralChatFilter) Check(ctx context.Context, event *nostr.Event, rem
 	}
 
 	if IsPoWValid(event, cfg.raw.RequiredPoWOnLimit) {
-		slog.Info("Accepting event over rate limit due to valid PoW", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "pow_difficulty", cfg.raw.RequiredPoWOnLimit)
 		return Accept()
 	}
 
-	slog.Warn("Rejecting chat message due to rate limit (PoW fallback failed)", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "required_pow", cfg.raw.RequiredPoWOnLimit)
-	return Reject(fmt.Sprintf("blocked: chat rate limit exceeded. Attach PoW of difficulty %d to send.", cfg.raw.RequiredPoWOnLimit))
+	return Reject(
+		fmt.Sprintf("blocked: chat rate limit exceeded. Attach PoW of difficulty %d to send.", cfg.raw.RequiredPoWOnLimit),
+		slog.Int("required_pow", cfg.raw.RequiredPoWOnLimit),
+	)
 }
 
 // UpdateConfig atomically replaces the filter's configuration.

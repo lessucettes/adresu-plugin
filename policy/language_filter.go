@@ -146,7 +146,6 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 	// --- Step 5: Main logic ---
 	detectedLang, detected := f.detector.DetectLanguageOf(event.Content)
 	if !detected {
-		slog.Debug("Language not identified; rejecting", "pubkey", event.PubKey, "event_id", event.ID)
 		return Reject("blocked: language could not be determined")
 	}
 
@@ -158,7 +157,7 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 		return Accept()
 	}
 
-	// --- Step 5.2 (NEW): If not directly allowed, check confidence against primary languages ---
+	// --- Step 5.2 : If not directly allowed, check confidence against primary languages ---
 	for primaryLang, similarLangsMap := range f.thresholds {
 		// Find the threshold: first for the specific detected language, then for "default".
 		threshold, hasRule := similarLangsMap[detectedLang]
@@ -171,11 +170,7 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 			// ...compute confidence only when necessary.
 			confidence := f.detector.ComputeLanguageConfidence(event.Content, primaryLang)
 			if confidence > threshold {
-				slog.Debug("Accepted by confidence threshold",
-					"pubkey", event.PubKey, "event_id", event.ID,
-					"detected", detectedLang.String(), "accepted_as", primaryLang.String(),
-					"confidence", fmt.Sprintf("%.4f", confidence), "threshold", fmt.Sprintf("%.4f", threshold))
-
+				// The old slog.Debug call is removed.
 				if f.approvedCache != nil {
 					f.approvedCache.Add(event.PubKey, struct{}{})
 				}
@@ -185,9 +180,10 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 	}
 
 	// --- Step 6: Reject if no rule was met ---
-	slog.Debug("Rejected due to language policy",
-		"ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "detected_lang", detectedLang.String())
-	return Reject(fmt.Sprintf("blocked: language '%s' is not allowed", detectedLang.String()))
+	return Reject(
+		fmt.Sprintf("blocked: language '%s' is not allowed", detectedLang.String()),
+		slog.String("detected_language", detectedLang.String()),
+	)
 }
 
 // --- Helpers ---

@@ -83,7 +83,7 @@ func (f *RepostAbuseFilter) Check(ctx context.Context, event *nostr.Event, remot
 
 	// --- Step 3: Enforcement logic without holding the lock.
 	shouldReject := false
-	rejectionMsg := ""
+	var rejectionResult *Result
 
 	// Predictive ratio: if current event is a repost, evaluate as if counters included it.
 	if isRepost {
@@ -98,20 +98,17 @@ func (f *RepostAbuseFilter) Check(ctx context.Context, event *nostr.Event, remot
 			}
 
 			if currentRatio >= f.cfg.MaxRatio {
-				// Prepare log and user-facing message.
 				ratioPercent := currentRatio * 100
 				limitPercent := f.cfg.MaxRatio * 100
-				slog.Warn("Rejecting event due to high repost ratio",
-					"ip", remoteIP,
-					"pubkey", event.PubKey,
-					"event_id", event.ID,
-					"classification", cls,
-					"ratio_percent", fmt.Sprintf("%.1f%%", ratioPercent),
-					"limit_percent", fmt.Sprintf("%.1f%%", limitPercent),
-				)
-				rejectionMsg = fmt.Sprintf(
-					"blocked: too many reposts. Your repost ratio would be %.1f%%, the limit is %.1f%%. Please post original content.",
-					ratioPercent, limitPercent,
+
+				rejectionResult = Reject(
+					fmt.Sprintf(
+						"blocked: too many reposts. Your repost ratio would be %.1f%%, the limit is %.1f%%. Please post original content.",
+						ratioPercent, limitPercent,
+					),
+					slog.String("classification", cls),
+					slog.Float64("repost_ratio_percent", ratioPercent),
+					slog.Float64("limit_percent", limitPercent),
 				)
 				shouldReject = true
 			}
@@ -149,7 +146,7 @@ func (f *RepostAbuseFilter) Check(ctx context.Context, event *nostr.Event, remot
 	f.mu.Unlock()
 
 	if shouldReject {
-		return Reject(rejectionMsg)
+		return rejectionResult
 	}
 	return Accept()
 }
@@ -160,11 +157,8 @@ func (f *RepostAbuseFilter) Check(ctx context.Context, event *nostr.Event, remot
 func (f *RepostAbuseFilter) isRepostNIP18(ev *nostr.Event) (bool, string) {
 	switch ev.Kind {
 	case nostr.KindRepost: // 6
-		// MUST include an 'e' tag with the id + relay URL; we count as repost regardless,
-		// but log classification as kind6.
 		return true, "kind6"
 	case 16: // generic repost
-		// SHOULD contain a "k" tag with kind number; we still count as repost.
 		return true, "kind16"
 	case nostr.KindTextNote: // 1
 		// Quote reposts: kind 1 with a 'q' tag.

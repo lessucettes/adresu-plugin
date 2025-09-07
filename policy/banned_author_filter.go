@@ -95,7 +95,6 @@ func (f *BannedAuthorFilter) Check(ctx context.Context, event *nostr.Event, remo
 		return Reject("internal: verification error")
 	}
 	if banned {
-		slog.Warn("Rejecting event from banned author", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID)
 		return Reject(fmt.Sprintf("blocked: author %s is banned", event.PubKey))
 	}
 
@@ -104,8 +103,10 @@ func (f *BannedAuthorFilter) Check(ctx context.Context, event *nostr.Event, remo
 		if delegationTag := event.Tags.Find("delegation"); delegationTag != nil {
 			delegator, err := f.validateDelegation(event, delegationTag)
 			if err != nil {
-				slog.Warn("Rejecting event with invalid delegation", "ip", remoteIP, "pubkey", event.PubKey, "event_id", event.ID, "error", err)
-				return Reject(fmt.Sprintf("blocked: invalid delegation: %v", err))
+				return Reject(
+					fmt.Sprintf("blocked: invalid delegation: %v", err),
+					slog.String("delegation_error", err.Error()),
+				)
 			}
 
 			if delegator != "" {
@@ -115,8 +116,11 @@ func (f *BannedAuthorFilter) Check(ctx context.Context, event *nostr.Event, remo
 					return Reject("internal: verification error")
 				}
 				if banned {
-					slog.Warn("Rejecting event from banned delegator", "ip", remoteIP, "delegator_pubkey", delegator, "signer_pubkey", event.PubKey, "event_id", event.ID)
-					return Reject(fmt.Sprintf("blocked: delegator %s is banned", delegator))
+					return Reject(
+						fmt.Sprintf("blocked: delegator %s is banned", delegator),
+						slog.String("delegator_pubkey", delegator),
+						slog.String("signer_pubkey", event.PubKey),
+					)
 				}
 			}
 		}
