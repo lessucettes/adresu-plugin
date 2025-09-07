@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/nbd-wtf/go-nostr"
@@ -29,38 +28,12 @@ func init() {
 	contentCleanerRegex = regexp.MustCompile(cleanerPattern)
 }
 
-// SafeApprovedCache wraps expirable LRU with a RWMutex since it is not goroutine-safe.
-type SafeApprovedCache struct {
-	mu    sync.RWMutex
-	cache *lru.LRU[string, struct{}]
-}
-
-// NewSafeApprovedCache now correctly accepts time.Duration for consistency.
-func NewSafeApprovedCache(size int, ttl time.Duration) *SafeApprovedCache {
-	return &SafeApprovedCache{
-		cache: lru.NewLRU[string, struct{}](size, nil, ttl),
-	}
-}
-
-func (c *SafeApprovedCache) Get(key string) (struct{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.cache.Get(key)
-}
-
-// Add is now correctly implemented with a single lock for the entire operation.
-func (c *SafeApprovedCache) Add(key string, value struct{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cache.Add(key, value)
-}
-
 type LanguageFilter struct {
 	cfg               *config.LanguageFilterConfig
 	detector          lingua.LanguageDetector
 	allowedLangs      map[lingua.Language]struct{}
 	allowedKinds      map[int]struct{}
-	approvedCache     *SafeApprovedCache
+	approvedCache     *lru.LRU[string, struct{}]
 	thresholds        map[lingua.Language]map[lingua.Language]float64
 	defaultThresholds map[lingua.Language]float64
 }
@@ -75,7 +48,6 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 
 	buildLookupOnce.Do(buildLanguageLookupMap)
 
-	// --- Standard setup (Allowed Languages & Kinds) ---
 	allowedMap := make(map[lingua.Language]struct{}, len(cfg.AllowedLanguages))
 	for _, langStr := range cfg.AllowedLanguages {
 		if lang, ok := languageLookupMap[strings.ToLower(langStr)]; ok {
@@ -112,9 +84,9 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 		}
 	}
 
-	var cache *SafeApprovedCache
+	var cache *lru.LRU[string, struct{}]
 	if cfg.ApprovedCacheTTL > 0 && cfg.ApprovedCacheSize > 0 {
-		cache = NewSafeApprovedCache(cfg.ApprovedCacheSize, cfg.ApprovedCacheTTL)
+		cache = lru.NewLRU[string, struct{}](cfg.ApprovedCacheSize, nil, cfg.ApprovedCacheTTL)
 	}
 
 	return &LanguageFilter{
@@ -158,7 +130,7 @@ func (f *LanguageFilter) Check(ctx context.Context, event *nostr.Event, remoteIP
 		return Reject("blocked: language could not be determined")
 	}
 
-	// --- Check if the detected language is in the main allow list ---
+	// Check if the detected language is in the main allow list
 	if _, isAllowed := f.allowedLangs[detectedLang]; isAllowed {
 		if f.approvedCache != nil {
 			f.approvedCache.Add(event.PubKey, struct{}{})

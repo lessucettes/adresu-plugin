@@ -36,6 +36,27 @@ type EphemeralChatFilter struct {
 	limiters *lru.LRU[string, *rate.Limiter]
 }
 
+var hexToLeadingZeros [256]int
+
+func init() {
+	// Pre-compute leading zero bits for each possible hex character value.
+	for i := 0; i < 256; i++ {
+		char := byte(i)
+		var val uint64
+		if char >= '0' && char <= '9' {
+			val, _ = strconv.ParseUint(string(char), 16, 4)
+		} else if char >= 'a' && char <= 'f' {
+			val, _ = strconv.ParseUint(string(char), 16, 4)
+		} else if char >= 'A' && char <= 'F' {
+			val, _ = strconv.ParseUint(string(char), 16, 4)
+		} else {
+			hexToLeadingZeros[i] = -1 // Mark as invalid
+			continue
+		}
+		hexToLeadingZeros[i] = bits.LeadingZeros8(uint8(val << 4))
+	}
+}
+
 // NewEphemeralChatFilter creates a new filter for ephemeral chats.
 func NewEphemeralChatFilter(cfg *config.EphemeralChatFilterConfig) *EphemeralChatFilter {
 	f := &EphemeralChatFilter{}
@@ -148,10 +169,8 @@ func (f *EphemeralChatFilter) UpdateConfig(newGlobalCfg *config.Config) error {
 
 	f.initCaches(newCfg)
 
-	if f.activeCfg.raw.CacheSize != newCfg.CacheSize ||
-		f.activeCfg.raw.RateLimitRate != newCfg.RateLimitRate ||
-		f.activeCfg.raw.RateLimitBurst != newCfg.RateLimitBurst {
-		slog.Warn("Changes to cache_size, rate_limit_rate, or rate_limit_burst in EphemeralChatFilter require a plugin restart to take effect.")
+	if f.activeCfg.raw.CacheSize != newCfg.CacheSize {
+		slog.Info("EphemeralChatFilter cache_size updated", "old", f.activeCfg.raw.CacheSize, "new", newCfg.CacheSize)
 	}
 
 	newActiveCfg := f.buildActiveConfig(newCfg)
@@ -180,9 +199,7 @@ func (f *EphemeralChatFilter) initCaches(cfg *config.EphemeralChatFilterConfig) 
 		f.limiters = nil
 		return
 	}
-	if f.limiters != nil && f.lastSeen != nil {
-		return
-	}
+
 	size := cfg.CacheSize
 	if size <= 0 {
 		size = 10000
@@ -199,29 +216,24 @@ func (f *EphemeralChatFilter) getLimiter(key string, cfg *activeChatConfig) *rat
 	if limiter, ok := f.limiters.Get(key); ok {
 		return limiter
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if limiter, ok := f.limiters.Get(key); ok {
-		return limiter
-	}
 	limiter := rate.NewLimiter(rate.Limit(cfg.raw.RateLimitRate), cfg.raw.RateLimitBurst)
 	f.limiters.Add(key, limiter)
 	return limiter
 }
 
-// countLeadingZeroBits calculates the number of leading zero bits in a hex string.
+// countLeadingZeroBits calculates the number of leading zero bits in a hex string using a lookup table.
 func countLeadingZeroBits(hexString string) int {
 	count := 0
 	for i := 0; i < len(hexString); i++ {
 		char := hexString[i]
-		val, err := strconv.ParseUint(string(char), 16, 4)
-		if err != nil {
+		zeros := hexToLeadingZeros[char]
+
+		if zeros == -1 { // Invalid hex character
 			return count
 		}
-		if val == 0 {
-			count += 4
-		} else {
-			count += bits.LeadingZeros8(uint8(val << 4))
+
+		count += zeros
+		if zeros != 4 { // Stop if it's not a '0' character
 			break
 		}
 	}
@@ -240,7 +252,8 @@ func IsPoWValid(event *nostr.Event, minDifficulty int) bool {
 		return false
 	}
 
-	claimedDifficulty, err := strconv.Atoi(strings.TrimSpace(string(nonceTag[2])))
+	// Correctly parse the full string from the tag.
+	claimedDifficulty, err := strconv.Atoi(strings.TrimSpace(nonceTag[2]))
 	if err != nil {
 		return false
 	}

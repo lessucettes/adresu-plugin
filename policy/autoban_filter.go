@@ -16,7 +16,6 @@ import (
 
 // AutoBanFilter automatically bans users who repeatedly trigger rejections.
 type AutoBanFilter struct {
-	// Guard ALL access to LRU caches with this mutex (hashicorp lru is NOT thread-safe).
 	mu sync.Mutex
 
 	strikes         *lru.LRU[string, *RejectionStats]
@@ -68,10 +67,8 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 		finalStrikeCount int
 	)
 
-	// All LRU operations must be under the mutex.
 	f.mu.Lock()
 
-	// Cooldown check (inside lock to avoid races).
 	if _, onCooldown := f.banningCooldown.Get(pubkey); onCooldown {
 		f.mu.Unlock()
 		return
@@ -88,14 +85,12 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 	if stats.StrikeCount >= f.cfg.MaxStrikes {
 		shouldBan = true
 		finalStrikeCount = stats.StrikeCount
-		// Remove strikes tracking and immediately add cooldown to close race windows.
 		f.strikes.Remove(pubkey)
 		f.banningCooldown.Add(pubkey, struct{}{})
 	}
 
 	f.mu.Unlock()
 
-	// Do logging/spawning outside of the lock.
 	if shouldBan {
 		slog.Warn("Auto-banning user for repeated violations",
 			"pubkey", pubkey,
@@ -108,7 +103,6 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 }
 
 // banUser performs the ban operation in a separate goroutine.
-// Uses configurable timeout; falls back to 5s if not set.
 func (f *AutoBanFilter) banUser(pubkey string) {
 	timeout := f.cfg.BanTimeout
 	if timeout <= 0 {
@@ -120,9 +114,5 @@ func (f *AutoBanFilter) banUser(pubkey string) {
 
 	if err := f.store.BanAuthor(banCtx, pubkey, f.cfg.BanDuration); err != nil {
 		slog.Error("Failed to auto-ban author", "pubkey", pubkey, "error", err)
-		// If ban failed, remove cooldown so strikes keep accruing.
-		f.mu.Lock()
-		f.banningCooldown.Remove(pubkey)
-		f.mu.Unlock()
 	}
 }

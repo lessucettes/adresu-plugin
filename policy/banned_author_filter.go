@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -30,7 +29,6 @@ const (
 type BannedAuthorFilter struct {
 	store store.Store
 	cache *lru.LRU[string, bool]
-	mu    sync.RWMutex
 	sf    singleflight.Group
 	cfg   *config.BannedAuthorFilterConfig
 }
@@ -49,29 +47,21 @@ func (f *BannedAuthorFilter) Name() string { return "BannedAuthorFilter" }
 func (f *BannedAuthorFilter) isBanned(ctx context.Context, pubkey string) (bool, error) {
 	normalizedPubkey := strings.ToLower(pubkey)
 
-	f.mu.RLock()
 	if isBanned, ok := f.cache.Get(normalizedPubkey); ok {
-		f.mu.RUnlock()
 		return isBanned, nil
 	}
-	f.mu.RUnlock()
 
 	v, err, _ := f.sf.Do(normalizedPubkey, func() (any, error) {
-		f.mu.RLock()
 		if isBanned, ok := f.cache.Get(normalizedPubkey); ok {
-			f.mu.RUnlock()
 			return isBanned, nil
 		}
-		f.mu.RUnlock()
 
 		isBanned, err := f.store.IsAuthorBanned(ctx, normalizedPubkey)
 		if err != nil {
 			return false, err
 		}
 
-		f.mu.Lock()
 		f.cache.Add(normalizedPubkey, isBanned)
-		f.mu.Unlock()
 		return isBanned, nil
 	})
 

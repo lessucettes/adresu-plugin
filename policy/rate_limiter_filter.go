@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
+	"strconv"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
@@ -14,11 +14,16 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// A struct to hold a rule and its stable identifier.
+type processedRateRule struct {
+	rule *config.RateLimitRule
+	id   string // e.g., "rule-0", "rule-1"
+}
+
 type RateLimiterFilter struct {
 	cfg        *config.RateLimiterConfig
 	limiters   *lru.LRU[string, *rate.Limiter]
-	kindToRule map[int]*config.RateLimitRule
-	mu         sync.Mutex
+	kindToRule map[int]processedRateRule
 }
 
 func NewRateLimiterFilter(cfg *config.RateLimiterConfig) *RateLimiterFilter {
@@ -32,12 +37,17 @@ func NewRateLimiterFilter(cfg *config.RateLimiterConfig) *RateLimiterFilter {
 	}
 
 	cache := lru.NewLRU[string, *rate.Limiter](size, nil, ttl)
+	kindMap := make(map[int]processedRateRule, len(cfg.Rules))
 
-	kindMap := make(map[int]*config.RateLimitRule, len(cfg.Rules))
+	// Loop with index to get a stable ID.
 	for i := range cfg.Rules {
 		rule := &cfg.Rules[i]
+		processed := processedRateRule{
+			rule: rule,
+			id:   "rule-" + strconv.Itoa(i), // Create stable ID from index.
+		}
 		for _, kind := range rule.Kinds {
-			kindMap[kind] = rule
+			kindMap[kind] = processed
 		}
 	}
 
@@ -55,27 +65,27 @@ func (f *RateLimiterFilter) Check(ctx context.Context, event *nostr.Event, remot
 		return Accept()
 	}
 
-	// Determine which rate and burst to use based on the event kind.
 	var currentRate float64
 	var currentBurst int
+	var ruleID string
 	var ruleDescription string
 
-	if rule, exists := f.kindToRule[event.Kind]; exists {
-		currentRate = rule.Rate
-		currentBurst = rule.Burst
-		ruleDescription = rule.Description
+	if processed, exists := f.kindToRule[event.Kind]; exists {
+		currentRate = processed.rule.Rate
+		currentBurst = processed.rule.Burst
+		ruleID = processed.id
+		ruleDescription = processed.rule.Description
 	} else {
 		currentRate = f.cfg.DefaultRate
 		currentBurst = f.cfg.DefaultBurst
+		ruleID = "default"
 		ruleDescription = "default"
 	}
 
-	// The rate must be positive for the rule to be active.
 	if currentRate <= 0 {
 		return Accept()
 	}
 
-	// Determine keys to limit by (IP, pubkey, or both).
 	var userKeys []string
 	switch f.cfg.By {
 	case config.RateByIP:
@@ -96,8 +106,7 @@ func (f *RateLimiterFilter) Check(ctx context.Context, event *nostr.Event, remot
 	}
 
 	for _, userKey := range userKeys {
-		// The cache key must be unique for each user AND each rule type.
-		cacheKey := fmt.Sprintf("%s:%s", ruleDescription, userKey)
+		cacheKey := fmt.Sprintf("%s:%s", ruleID, userKey)
 		limiter := f.getLimiter(cacheKey, currentRate, currentBurst)
 		if !limiter.Allow() {
 			return Reject(
@@ -111,11 +120,6 @@ func (f *RateLimiterFilter) Check(ctx context.Context, event *nostr.Event, remot
 }
 
 func (f *RateLimiterFilter) getLimiter(key string, r float64, b int) *rate.Limiter {
-	if limiter, ok := f.limiters.Get(key); ok {
-		return limiter
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	if limiter, ok := f.limiters.Get(key); ok {
 		return limiter
 	}
