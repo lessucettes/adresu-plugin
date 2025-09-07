@@ -106,7 +106,7 @@ func preparePipeline(t *testing.T) (*policy.Pipeline, func()) {
 }
 
 // runProcess runs processEvents with provided lines and returns all output lines written.
-func runProcess(t *testing.T, p *policy.Pipeline, lines [][]byte) ([][]byte, error) {
+func runProcess(t *testing.T, p *policy.Pipeline, lines [][]byte, dryRun bool) ([][]byte, error) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -130,7 +130,7 @@ func runProcess(t *testing.T, p *policy.Pipeline, lines [][]byte) ([][]byte, err
 	errCh := make(chan error, 1)
 	go func() {
 		// process
-		err := processEvents(ctx, rd, pw, p)
+		err := processEvents(ctx, rd, pw, p, dryRun)
 		_ = pw.Close()
 		errCh <- err
 	}()
@@ -220,7 +220,7 @@ func TestProcessEvents_BasicAccept(t *testing.T) {
 	}
 	b, _ := json.Marshal(in)
 
-	outLines, err := runProcess(t, p, [][]byte{b})
+	outLines, err := runProcess(t, p, [][]byte{b}, false)
 	if err != nil {
 		t.Fatalf("processEvents returned error: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestProcessEvents_IgnoresMalformedJSON(t *testing.T) {
 	}
 
 	// Should not error; processEvents logs a warning and continues until EOF.
-	out, err := runProcess(t, p, lines)
+	out, err := runProcess(t, p, lines, false)
 	if err != nil {
 		// context will finish with nil since EOF on stdin is normal termination
 		t.Fatalf("unexpected error from processEvents: %v", err)

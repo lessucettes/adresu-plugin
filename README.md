@@ -43,6 +43,8 @@ The plugin is operated via the command line.
 Usage of adresu-plugin:
   -config string
         Path to the configuration file. (default "./config.toml")
+  -dry-run
+        Log what would be rejected without actually rejecting it.
   -use-defaults
         Run with internal defaults if the config file is missing.
   -validate

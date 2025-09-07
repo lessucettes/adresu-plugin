@@ -52,6 +52,7 @@ func main() {
 	configPath := flag.String("config", "./config.toml", "Path to the configuration file.")
 	useDefaults := flag.Bool("use-defaults", false, "Run with internal defaults if the config file is missing.")
 	validateConfig := flag.Bool("validate", false, "Validate the configuration file and exit.")
+	dryRun := flag.Bool("dry-run", false, "Log what would be rejected without actually rejecting it.")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "adresu-plugin: A policy plugin for strfry (version: %s).\n\n", version)
@@ -75,7 +76,7 @@ func main() {
 		return
 	}
 
-	if err := runApp(*configPath, *useDefaults); err != nil {
+	if err := runApp(*configPath, *useDefaults, *dryRun); err != nil {
 		// Logger might not be initialized yet, so use fmt for this final error.
 		fmt.Fprintf(os.Stderr, "Application run failed: %v\n", err)
 		os.Exit(1)
@@ -103,7 +104,7 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 	pipeline := policy.NewPipeline(
 		policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan),
 		policy.NewKindFilter(cfg.Policy.AllowedKinds, cfg.Policy.DeniedKinds),
-		policy.NewBannedAuthorFilter(db),
+		policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor),
 		policy.NewRateLimiterFilter(&cfg.Filters.RateLimiter),
 		policy.NewFreshnessFilter(&cfg.Filters.Freshness),
 		policy.NewRepostAbuseFilter(&cfg.Filters.RepostAbuse),
@@ -150,7 +151,7 @@ func validateConfiguration(configPath string) error {
 }
 
 // runApp is the main application entry point.
-func runApp(configPath string, useDefaults bool) error {
+func runApp(configPath string, useDefaults bool, dryRun bool) error {
 	// --- Configuration & Logging ---
 	cfg, defaultsUsed, err := config.Load(configPath, useDefaults)
 	if err != nil {
@@ -161,6 +162,10 @@ func runApp(configPath string, useDefaults bool) error {
 		Level: cfg.Log.Level.ToSlogLevel(),
 	}))
 	slog.SetDefault(logger)
+
+	if dryRun {
+		slog.Warn("Plugin is running in DRY-RUN mode. All 'reject' actions will be logged but not enforced.")
+	}
 
 	slog.Info("Policy plugin starting up",
 		"version", version,
@@ -198,12 +203,12 @@ func runApp(configPath string, useDefaults bool) error {
 	go config.StartWatcher(ctx, configPath, updatableFilters, 0)
 
 	// --- Main Event Loop ---
-	return processEvents(ctx, os.Stdin, os.Stdout, pipeline)
+	return processEvents(ctx, os.Stdin, os.Stdout, pipeline, dryRun)
 }
 
 // processEvents runs the main I/O loop, processing events from stdin
 // and writing responses to stdout. It's designed to be cancellable via the context.
-func processEvents(ctx context.Context, r io.Reader, w io.Writer, p *policy.Pipeline) error {
+func processEvents(ctx context.Context, r io.Reader, w io.Writer, p *policy.Pipeline, dryRun bool) error {
 	linesChan := make(chan []byte)
 	errChan := make(chan error, 1)
 	encoder := json.NewEncoder(w)
@@ -264,7 +269,7 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, p *policy.Pipe
 				remoteIP = input.IP
 			}
 
-			result := p.ProcessEvent(ctx, &input.Event, remoteIP)
+			result := p.ProcessEvent(ctx, &input.Event, remoteIP, dryRun)
 
 			response := PolicyResponse{
 				ID:     input.Event.ID,

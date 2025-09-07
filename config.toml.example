@@ -144,6 +144,13 @@
 #count_reject_as_activity = false # If true, events rejected by other filters still count as user activity.
 #require_nip21_in_quote   = false # For kind 16, require a "nostr:..." URI in the content.
 
+# --- Banned Author Filter ---
+#[filters.banned_author]
+# If true, the filter will perform full NIP-26 validation to detect
+# and block events from banned delegators. This prevents ban evasion.
+# It is disabled by default because it adds a small cryptographic workload.
+# check_nip26 = true
+
 # --- Automatic Ban Filter (Autoban) ---
 #[filters.autoban]
 #enabled             = false

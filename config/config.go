@@ -86,6 +86,7 @@ type FiltersConfig struct {
 	Language      LanguageFilterConfig      `toml:"language"`
 	EphemeralChat EphemeralChatFilterConfig `toml:"ephemeral_chat"`
 	RepostAbuse   RepostAbuseFilterConfig   `toml:"repost_abuse"`
+	BannedAuthor  BannedAuthorFilterConfig  `toml:"banned_author"`
 	AutoBan       AutoBanFilterConfig       `toml:"autoban"`
 }
 
@@ -200,6 +201,10 @@ type RepostAbuseFilterConfig struct {
 	CacheTTL              time.Duration `toml:"cache_ttl"`
 	CountRejectAsActivity bool          `toml:"count_reject_as_activity"`
 	RequireNIP21InQuote   bool          `toml:"require_nip21_in_quote"`
+}
+
+type BannedAuthorFilterConfig struct {
+	CheckNIP26 bool `toml:"check_nip26"`
 }
 
 type AutoBanFilterConfig struct {
