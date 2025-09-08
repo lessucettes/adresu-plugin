@@ -106,6 +106,7 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 		policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan),
 		policy.NewKindFilter(cfg.Policy.AllowedKinds, cfg.Policy.DeniedKinds),
 		policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor),
+		policy.NewEphemeralChatFilter(&cfg.Filters.EphemeralChat),
 		policy.NewRateLimiterFilter(&cfg.Filters.RateLimiter),
 		policy.NewFreshnessFilter(&cfg.Filters.Freshness),
 		policy.NewRepostAbuseFilter(&cfg.Filters.RepostAbuse),
@@ -113,7 +114,6 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 		policy.NewTagsFilter(&cfg.Filters.Tags),
 		keywordFilter,
 		policy.NewLanguageFilter(&cfg.Filters.Language, languageDetector),
-		policy.NewEphemeralChatFilter(&cfg.Filters.EphemeralChat),
 		policy.NewModerationFilter(
 			cfg.Policy.ModeratorPubKey,
 			cfg.Policy.BanEmoji,

@@ -141,6 +141,11 @@
 #default_rate  = 0.5  # Default events per second.
 #default_burst = 5    # Default burst allowance.
 #[[filters.rate_limiter.rule]]
+#description = "Exclude Ephemeral Chats (handled by their own filter)"
+#kinds       = [20000, 23333]
+#rate        = 0
+#burst       = 1
+#[[filters.rate_limiter.rule]]
 #description = "Stricter limit for creating articles"
 #kinds       = [30023]
 #rate        = 0.0017 # ~1 article per 10 minutes
