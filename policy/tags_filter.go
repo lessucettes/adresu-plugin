@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -14,12 +13,10 @@ import (
 type TagsFilter struct{ kindToRule map[int]processedTagRule }
 
 // processedTagRule holds a pre-compiled, ready-to-use version of a rule.
-// All keys are stored in lowercase for efficient, case-insensitive matching.
 type processedTagRule struct {
-	source          *config.TagRule
-	requiredTags    map[string]struct{}
-	maxTagCounts    map[string]int
-	originalCaseMap map[string]string
+	source       *config.TagRule
+	requiredTags map[string]struct{}
+	maxTagCounts map[string]int
 }
 
 func NewTagsFilter(cfg *config.TagsFilterConfig) *TagsFilter {
@@ -29,24 +26,19 @@ func NewTagsFilter(cfg *config.TagsFilterConfig) *TagsFilter {
 		rule := &cfg.Rules[i]
 
 		processed := processedTagRule{
-			source:          rule,
-			originalCaseMap: make(map[string]string),
+			source:       rule,
+			requiredTags: make(map[string]struct{}),
+			maxTagCounts: make(map[string]int),
 		}
 
 		if len(rule.RequiredTags) > 0 {
-			processed.requiredTags = make(map[string]struct{}, len(rule.RequiredTags))
 			for _, req := range rule.RequiredTags {
-				lower := strings.ToLower(req)
-				processed.requiredTags[lower] = struct{}{}
-				processed.originalCaseMap[lower] = req
+				processed.requiredTags[req] = struct{}{}
 			}
 		}
 		if len(rule.MaxTagCounts) > 0 {
-			processed.maxTagCounts = make(map[string]int, len(rule.MaxTagCounts))
 			for key, val := range rule.MaxTagCounts {
-				lower := strings.ToLower(key)
-				processed.maxTagCounts[lower] = val
-				processed.originalCaseMap[lower] = key
+				processed.maxTagCounts[key] = val
 			}
 		}
 
@@ -68,7 +60,8 @@ func (f *TagsFilter) Check(ctx context.Context, event *nostr.Event, remoteIP str
 
 	if rule.MaxTags != nil && len(event.Tags) > *rule.MaxTags {
 		return Reject(
-			fmt.Sprintf("blocked: too many tags for %s (got %d, max %d)", rule.Description, len(event.Tags), *rule.MaxTags),
+			fmt.Sprintf("blocked: too many tags for %s (got %d, max %d)",
+				rule.Description, len(event.Tags), *rule.MaxTags),
 			slog.Int("tag_count", len(event.Tags)),
 			slog.Int("limit", *rule.MaxTags),
 			slog.String("rule_description", rule.Description),
@@ -83,7 +76,7 @@ func (f *TagsFilter) Check(ctx context.Context, event *nostr.Event, remoteIP str
 			if len(tag) == 0 || tag[0] == "" {
 				continue
 			}
-			tagName := strings.ToLower(tag[0])
+			tagName := tag[0] // Case-sensitive: "L" ≠ "l".
 
 			if _, ok := processedRule.maxTagCounts[tagName]; ok {
 				specificTagCounts[tagName]++
@@ -93,24 +86,23 @@ func (f *TagsFilter) Check(ctx context.Context, event *nostr.Event, remoteIP str
 			}
 		}
 
-		for reqTagLower := range processedRule.requiredTags {
-			if !requiredFound[reqTagLower] {
-				originalTag := processedRule.originalCaseMap[reqTagLower]
+		for reqTag := range processedRule.requiredTags {
+			if !requiredFound[reqTag] {
 				return Reject(
-					fmt.Sprintf("blocked: missing required tag '%s' for %s", originalTag, rule.Description),
-					slog.String("required_tag", originalTag),
+					fmt.Sprintf("blocked: missing required tag '%s' for %s", reqTag, rule.Description),
+					slog.String("required_tag", reqTag),
 					slog.String("rule_description", rule.Description),
 				)
 			}
 		}
 
-		for tagNameLower, limit := range processedRule.maxTagCounts {
-			count := specificTagCounts[tagNameLower]
+		for tagName, limit := range processedRule.maxTagCounts {
+			count := specificTagCounts[tagName]
 			if count > limit {
-				originalTag := processedRule.originalCaseMap[tagNameLower]
 				return Reject(
-					fmt.Sprintf("blocked: too many '%s' tags for %s (got %d, max %d)", originalTag, rule.Description, count, limit),
-					slog.String("tag_type", originalTag),
+					fmt.Sprintf("blocked: too many '%s' tags for %s (got %d, max %d)",
+						tagName, rule.Description, count, limit),
+					slog.String("tag_type", tagName),
 					slog.Int("tag_count", count),
 					slog.Int("limit", limit),
 					slog.String("rule_description", rule.Description),

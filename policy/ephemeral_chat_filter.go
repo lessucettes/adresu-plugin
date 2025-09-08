@@ -157,6 +157,7 @@ func (f *EphemeralChatFilter) Check(ctx context.Context, event *nostr.Event, rem
 	return Reject(
 		fmt.Sprintf("blocked: chat rate limit exceeded. Attach PoW of difficulty %d to send.", cfg.raw.RequiredPoWOnLimit),
 		slog.Int("required_pow", cfg.raw.RequiredPoWOnLimit),
+		slog.Bool("pow_fallback_failed", true),
 	)
 }
 
