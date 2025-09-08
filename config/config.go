@@ -270,11 +270,11 @@ func (c *Config) validate() error {
 	// [filters.rate_limiter]
 	if c.Filters.RateLimiter.Enabled {
 		if c.Filters.RateLimiter.DefaultRate < 0 || c.Filters.RateLimiter.DefaultBurst <= 0 {
-			return errors.New("filters.rate_limiter: default_rate and default_burst must be > 0 when enabled")
+			return errors.New("filters.rate_limiter: default_rate must be >= 0 and default_burst must be > 0")
 		}
 		for i, rule := range c.Filters.RateLimiter.Rules {
 			if rule.Rate < 0 || rule.Burst <= 0 {
-				return fmt.Errorf("filters.rate_limiter.rule[%d] ('%s'): rate and burst must be > 0", i, rule.Description)
+				return fmt.Errorf("filters.rate_limiter.rule[%d] ('%s'): rate must be >= 0 and burst must be > 0", i, rule.Description)
 			}
 		}
 	}
