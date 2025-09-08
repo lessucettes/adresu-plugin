@@ -84,6 +84,7 @@ func (f *EphemeralChatFilter) Check(ctx context.Context, event *nostr.Event, rem
 				return Reject("blocked: posting too frequently in chat",
 					slog.String("delay", delay.String()),
 					slog.String("limit", cfg.raw.MinDelay.String()),
+					slog.Bool("micro_flood", true),
 				)
 			}
 		}
