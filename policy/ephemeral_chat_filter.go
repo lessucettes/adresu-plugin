@@ -53,7 +53,11 @@ func init() {
 			hexToLeadingZeros[i] = -1 // Mark as invalid
 			continue
 		}
-		hexToLeadingZeros[i] = bits.LeadingZeros8(uint8(val << 4))
+		if val == 0 {
+			hexToLeadingZeros[i] = 4
+		} else {
+			hexToLeadingZeros[i] = bits.LeadingZeros8(uint8(val << 4))
+		}
 	}
 }
 
@@ -186,7 +190,7 @@ func (f *EphemeralChatFilter) UpdateConfig(newGlobalCfg *config.Config) error {
 func (f *EphemeralChatFilter) buildActiveConfig(cfg *config.EphemeralChatFilterConfig) *activeChatConfig {
 	ac := &activeChatConfig{raw: cfg}
 	if cfg.BlockZalgo {
-		ac.zalgoRegex = regexp.MustCompile(`\p{M}`)
+		ac.zalgoRegex = regexp.MustCompile("[\u0300-\u036F\u1AB0-\u1AFF\u1DC0-\u1DFF\u20D0-\u20FF\uFE20-\uFE2F]")
 	}
 	if cfg.MaxWordLength > 0 {
 		ac.wordRegex = regexp.MustCompile(fmt.Sprintf(`\S{%d,}`, cfg.MaxWordLength))
@@ -244,9 +248,8 @@ func countLeadingZeroBits(hexString string) int {
 
 // IsPoWValid checks if an event has a valid Proof of Work of at least minDifficulty.
 func IsPoWValid(event *nostr.Event, minDifficulty int) bool {
-	actualDifficulty := countLeadingZeroBits(event.ID)
-	if actualDifficulty < minDifficulty {
-		return false
+	if minDifficulty <= 0 {
+		return true
 	}
 
 	nonceTag := event.Tags.FindLast("nonce")
@@ -254,10 +257,19 @@ func IsPoWValid(event *nostr.Event, minDifficulty int) bool {
 		return false
 	}
 
-	// Correctly parse the full string from the tag.
 	claimedDifficulty, err := strconv.Atoi(strings.TrimSpace(nonceTag[2]))
 	if err != nil {
 		return false
 	}
-	return claimedDifficulty >= minDifficulty
+
+	if claimedDifficulty < minDifficulty {
+		return false
+	}
+
+	actualDifficulty := countLeadingZeroBits(event.ID)
+	if actualDifficulty < claimedDifficulty {
+		return false
+	}
+
+	return true
 }
