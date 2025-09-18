@@ -129,9 +129,17 @@ type RateLimiterConfig struct {
 	Rules        []RateLimitRule `toml:"rule"`
 }
 
+type FreshnessRule struct {
+	Kinds       []int         `toml:"kinds"`
+	Description string        `toml:"description"`
+	MaxPast     time.Duration `toml:"max_past"`
+	MaxFuture   time.Duration `toml:"max_future"`
+}
+
 type FreshnessFilterConfig struct {
-	MaxPast   time.Duration `toml:"max_past"`
-	MaxFuture time.Duration `toml:"max_future"`
+	DefaultMaxPast   time.Duration   `toml:"default_max_past"`
+	DefaultMaxFuture time.Duration   `toml:"default_max_future"`
+	Rules            []FreshnessRule `toml:"rule"`
 }
 
 type SizeRule struct {
@@ -280,11 +288,23 @@ func (c *Config) validate() error {
 	}
 
 	// [filters.freshness]
-	if c.Filters.Freshness.MaxPast < 0 {
-		return errors.New("filters.freshness.max_past must not be a negative duration")
+	if c.Filters.Freshness.DefaultMaxPast < 0 {
+		return errors.New("filters.freshness.default_max_past must not be a negative duration")
 	}
-	if c.Filters.Freshness.MaxFuture < 0 {
-		return errors.New("filters.freshness.max_future must not be a negative duration")
+	if c.Filters.Freshness.DefaultMaxFuture < 0 {
+		return errors.New("filters.freshness.default_max_future must not be a negative duration")
+	}
+	// Validate each new rule.
+	for i, rule := range c.Filters.Freshness.Rules {
+		if len(rule.Kinds) == 0 {
+			return fmt.Errorf("filters.freshness.rule[%d] ('%s'): must specify kinds", i, rule.Description)
+		}
+		if rule.MaxPast < 0 {
+			return fmt.Errorf("filters.freshness.rule[%d] ('%s'): max_past must not be a negative duration", i, rule.Description)
+		}
+		if rule.MaxFuture < 0 {
+			return fmt.Errorf("filters.freshness.rule[%d] ('%s'): max_future must not be a negative duration", i, rule.Description)
+		}
 	}
 
 	// [filters.size]

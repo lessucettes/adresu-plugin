@@ -71,8 +71,24 @@
 # --- Freshness Filter ---
 # Rejects events that are too old or have a timestamp too far in the future.
 #[filters.freshness]
-#max_past   = "24h" # Maximum age of an event.
-#max_future = "15m" # Maximum time in the future an event's timestamp can be.
+# If default_max_past or default_max_future are set, they apply to all
+# kinds that don't have a specific rule below.
+#default_max_past   = "24h"
+#default_max_future = "15m"
+
+# You can define specific rules for different kinds.
+# The first rule that matches an event's kind will be used.
+# [[filters.freshness.rule]]
+# description    = "Allow old articles, but new ones should be recent"
+# kinds          = [30023]
+# max_past       = "7d" # Long-form articles can be up to 7 days old.
+# max_future     = "15m"
+
+# [[filters.freshness.rule]]
+# description    = "Strict freshness for chats"
+# kinds          = [9]
+# max_past       = "5m" # Chats should be very recent.
+# max_future     = "1m"
 
 # --- Event Size Filter ---
 #[filters.size]
