@@ -12,23 +12,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// makeEventAtTime is a small helper to create an event with a specific timestamp.
-func makeEventAtTime(t time.Time) *nostr.Event {
+func makeEventAtTime(t time.Time, kind int) *nostr.Event {
 	return &nostr.Event{
 		PubKey:    "test_pubkey",
 		CreatedAt: nostr.Timestamp(t.Unix()),
-		Kind:      1,
+		Kind:      kind,
 		Content:   "test",
 	}
 }
 
-func TestFreshnessFilter(t *testing.T) {
+func TestFreshnessFilter_Defaults(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now() // Use a fixed time for predictable test results.
 
 	baseCfg := &config.FreshnessFilterConfig{
-		MaxPast:   time.Hour,       // Allow events up to 1 hour old.
-		MaxFuture: 5 * time.Minute, // Allow events up to 5 minutes in the future.
+		DefaultMaxPast:   time.Hour,       // Allow events up to 1 hour old.
+		DefaultMaxFuture: 5 * time.Minute, // Allow events up to 5 minutes in the future.
 	}
 
 	testCases := []struct {
@@ -68,14 +67,14 @@ func TestFreshnessFilter(t *testing.T) {
 			expectedAction: ActionReject,
 		},
 		{
-			name:           "Should accept old event if MaxPast is zero (disabled)",
-			cfg:            &config.FreshnessFilterConfig{MaxPast: 0, MaxFuture: 5 * time.Minute},
+			name:           "Should accept old event if DefaultMaxPast is zero (disabled)",
+			cfg:            &config.FreshnessFilterConfig{DefaultMaxPast: 0, DefaultMaxFuture: 5 * time.Minute},
 			eventTime:      now.Add(-48 * time.Hour),
 			expectedAction: ActionAccept,
 		},
 		{
-			name:           "Should accept future event if MaxFuture is zero (disabled)",
-			cfg:            &config.FreshnessFilterConfig{MaxPast: time.Hour, MaxFuture: 0},
+			name:           "Should accept future event if DefaultMaxFuture is zero (disabled)",
+			cfg:            &config.FreshnessFilterConfig{DefaultMaxPast: time.Hour, DefaultMaxFuture: 0},
 			eventTime:      now.Add(48 * time.Hour),
 			expectedAction: ActionAccept,
 		},
@@ -84,7 +83,7 @@ func TestFreshnessFilter(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			filter := NewFreshnessFilter(tc.cfg)
-			event := makeEventAtTime(tc.eventTime)
+			event := makeEventAtTime(tc.eventTime, 1)
 
 			result := filter.Check(ctx, event, "127.0.0.1")
 
@@ -93,22 +92,47 @@ func TestFreshnessFilter(t *testing.T) {
 	}
 }
 
+func TestFreshnessFilter_WithRules(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+
+	cfg := &config.FreshnessFilterConfig{
+		DefaultMaxPast:   time.Second,
+		DefaultMaxFuture: time.Second,
+		Rules: []config.FreshnessRule{
+			{
+				Kinds:     []int{10002},
+				MaxPast:   24 * time.Hour,
+				MaxFuture: 10 * time.Minute,
+			},
+		},
+	}
+
+	filter := NewFreshnessFilter(cfg)
+
+	eventForRule := makeEventAtTime(now.Add(-12*time.Hour), 10002)
+	require.Equal(t, ActionAccept, filter.Check(ctx, eventForRule, "").Action, "Should accept old event matching a specific rule")
+
+	eventForDefault := makeEventAtTime(now.Add(-12*time.Hour), 1)
+	require.Equal(t, ActionReject, filter.Check(ctx, eventForDefault, "").Action, "Should reject old event using default policy")
+}
+
 func TestFreshnessFilter_UpdateConfig(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Start with a permissive config (allows events up to 1 hour old).
-	initialCfg := &config.FreshnessFilterConfig{MaxPast: time.Hour, MaxFuture: time.Minute}
+	// 1. Start with a permissive config.
+	initialCfg := &config.FreshnessFilterConfig{DefaultMaxPast: time.Hour, DefaultMaxFuture: time.Minute}
 	filter := NewFreshnessFilter(initialCfg)
 
 	// 2. Create an event that is 30 minutes old, which should be accepted.
-	event := makeEventAtTime(time.Now().Add(-30 * time.Minute))
+	event := makeEventAtTime(time.Now().Add(-30*time.Minute), 1)
 	require.Equal(t, ActionAccept, filter.Check(ctx, event, "").Action, "Event should be accepted with initial config")
 
-	// 3. Create a new, stricter global config (only allows events up to 10 minutes old).
+	// 3. Create a new, stricter global config.
 	stricterGlobalCfg := &config.Config{
 		Filters: config.FiltersConfig{
 			Freshness: config.FreshnessFilterConfig{
-				MaxPast: 10 * time.Minute, MaxFuture: time.Minute,
+				DefaultMaxPast: 10 * time.Minute, DefaultMaxFuture: time.Minute,
 			},
 		},
 	}

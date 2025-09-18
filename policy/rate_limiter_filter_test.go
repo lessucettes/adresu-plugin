@@ -28,7 +28,7 @@ func TestRateLimiterFilter(t *testing.T) {
 		sequence        []*nostr.Event
 		ips             []string
 		expectedActions []string
-		sleepAfter      int // index at which we sleep before processing that event
+		sleepAtIndex    int // index at which we sleep before processing that event
 	}{
 		{
 			name: "Filter disabled",
@@ -127,7 +127,7 @@ func TestRateLimiterFilter(t *testing.T) {
 			ips:             []string{ip1, ip1, ip1},
 			expectedActions: []string{ActionAccept, ActionReject, ActionAccept},
 			// Sleep before processing event at index 2 (the 3rd event).
-			sleepAfter: 2,
+			sleepAtIndex: 2,
 		},
 	}
 
@@ -136,15 +136,15 @@ func TestRateLimiterFilter(t *testing.T) {
 			filter := NewRateLimiterFilter(tc.cfg)
 
 			for i, ev := range tc.sequence {
-				if tc.sleepAfter > 0 && i == tc.sleepAfter {
-					// Wait long enough for at least one token to refill.
+				if tc.sleepAtIndex > 0 && i == tc.sleepAtIndex {
 					rate := tc.cfg.DefaultRate
 					if r, ok := filter.kindToRule[ev.Kind]; ok {
-						rate = r.Rate
+						rate = r.rule.Rate
 					}
+
 					if rate > 0 {
-						sleep := time.Duration(1/rate*float64(time.Second)) + 10*time.Millisecond
-						time.Sleep(sleep)
+						sleepDuration := time.Duration(1/rate*float64(time.Second)) + 50*time.Millisecond
+						time.Sleep(sleepDuration)
 					}
 				}
 
