@@ -173,6 +173,7 @@
 #max_ratio                = 0.7 # Max ratio of reposts (kinds 6, 16) to other events. 0.7 = 70%.
 #min_events               = 20  # Minimum number of events from a user before this filter applies.
 #reset_duration           = "12h" # User's activity ratio resets after this period of inactivity.
+#cache_size               = 10000 # Maximum number of unique users to track in memory at once.
 #cache_ttl                = "24h" # How long user activity data is kept in cache.
 #count_reject_as_activity = false # If true, events rejected by other filters still count as user activity.
 #require_nip21_in_quote   = false # For kind 16, require a "nostr:..." URI in the content.

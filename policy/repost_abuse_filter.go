@@ -34,7 +34,8 @@ var nip21Re = regexp.MustCompile(`\b(naddr1|nevent1|note1)[0-9a-z]+\b`)
 
 // NewRepostAbuseFilter constructs the filter from a configuration struct.
 func NewRepostAbuseFilter(cfg *config.RepostAbuseFilterConfig) *RepostAbuseFilter {
-	cache := lru.NewLRU[string, *UserActivityStats](50000, nil, cfg.CacheTTL)
+	size := cfg.CacheSize
+	cache := lru.NewLRU[string, *UserActivityStats](size, nil, cfg.CacheTTL)
 
 	// Clamp max_ratio to a sane range [0.0, 1.0].
 	if cfg.MaxRatio < 0 {

@@ -207,6 +207,7 @@ type RepostAbuseFilterConfig struct {
 	MaxRatio              float64       `toml:"max_ratio"`
 	MinEvents             int           `toml:"min_events"`
 	ResetDuration         time.Duration `toml:"reset_duration"`
+	CacheSize             int           `toml:"cache_size"`
 	CacheTTL              time.Duration `toml:"cache_ttl"`
 	CountRejectAsActivity bool          `toml:"count_reject_as_activity"`
 	RequireNIP21InQuote   bool          `toml:"require_nip21_in_quote"`
@@ -422,6 +423,9 @@ func (c *Config) validate() error {
 		}
 		if ra.ResetDuration < 0 {
 			return errors.New("filters.repost_abuse.reset_duration must not be negative")
+		}
+		if ra.CacheSize <= 0 {
+			return errors.New("filters.repost_abuse.cache_size must be positive")
 		}
 		if ra.CacheTTL <= 0 {
 			return errors.New("filters.repost_abuse.cache_ttl must be a positive duration")
