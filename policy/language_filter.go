@@ -169,7 +169,8 @@ func GetGlobalDetector() lingua.LanguageDetector {
 		slog.Info("Building language detector models...")
 		globalDetector = lingua.NewLanguageDetectorBuilder().
 			FromAllLanguages().
-			//			WithPreloadedLanguageModels().
+			WithLowAccuracyMode().
+			WithPreloadedLanguageModels().
 			Build()
 	})
 	return globalDetector
