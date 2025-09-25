@@ -103,6 +103,7 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 
 	pipeline := policy.NewPipeline(
 		cfg,
+		policy.NewEmergencyFilter(&cfg.Filters.Emergency),
 		policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan),
 		policy.NewKindFilter(cfg.Policy.AllowedKinds, cfg.Policy.DeniedKinds),
 		policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor),

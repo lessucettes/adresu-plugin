@@ -79,6 +79,7 @@ type PolicyConfig struct {
 }
 
 type FiltersConfig struct {
+	Emergency     EmergencyFilterConfig     `toml:"emergency"`
 	RateLimiter   RateLimiterConfig         `toml:"rate_limiter"`
 	Freshness     FreshnessFilterConfig     `toml:"freshness"`
 	Size          SizeFilterConfig          `toml:"size"`
@@ -89,6 +90,23 @@ type FiltersConfig struct {
 	RepostAbuse   RepostAbuseFilterConfig   `toml:"repost_abuse"`
 	BannedAuthor  BannedAuthorFilterConfig  `toml:"banned_author"`
 	AutoBan       AutoBanFilterConfig       `toml:"autoban"`
+}
+
+type EmergencyFilterConfig struct {
+	Enabled      bool          `toml:"enabled"`
+	NewKeysRate  float64       `toml:"new_keys_rate"`
+	NewKeysBurst int           `toml:"new_keys_burst"`
+	CacheSize    int           `toml:"cache_size"`
+	TTL          time.Duration `toml:"ttl"`
+	PerIP        struct {
+		Enabled    bool          `toml:"enabled"`
+		Rate       float64       `toml:"rate"`
+		Burst      int           `toml:"burst"`
+		CacheSize  int           `toml:"cache_size"`
+		TTL        time.Duration `toml:"ttl"`
+		IPv4Prefix int           `toml:"ipv4_prefix"`
+		IPv6Prefix int           `toml:"ipv6_prefix"`
+	} `toml:"per_ip"`
 }
 
 type RateLimiterBy string
@@ -275,6 +293,43 @@ func (c *Config) validate() error {
 	}
 
 	// --- [filters] ---
+
+	// [filters.emergency]
+	ef := c.Filters.Emergency
+	if ef.Enabled {
+		if ef.NewKeysRate <= 0 {
+			return errors.New("filters.emergency.new_keys_rate must be > 0")
+		}
+		if ef.NewKeysBurst < 0 {
+			return errors.New("filters.emergency.new_keys_burst must be >= 0")
+		}
+		if ef.CacheSize <= 0 {
+			return errors.New("filters.emergency.cache_size must be positive")
+		}
+		if ef.TTL <= 0 {
+			return errors.New("filters.emergency.ttl must be a positive duration")
+		}
+		if ef.PerIP.Enabled {
+			if ef.PerIP.Rate <= 0 {
+				return errors.New("filters.emergency.per_ip.rate must be > 0")
+			}
+			if ef.PerIP.Burst < 0 {
+				return errors.New("filters.emergency.per_ip.burst must be >= 0")
+			}
+			if ef.PerIP.CacheSize <= 0 {
+				return errors.New("filters.emergency.per_ip.cache_size must be positive")
+			}
+			if ef.PerIP.TTL <= 0 {
+				return errors.New("filters.emergency.per_ip.ttl must be a positive duration")
+			}
+			if p := ef.PerIP.IPv4Prefix; p < 0 || p > 32 {
+				return errors.New("filters.emergency.per_ip.ipv4_prefix must be in [0..32]")
+			}
+			if p := ef.PerIP.IPv6Prefix; p < 0 || p > 128 {
+				return errors.New("filters.emergency.per_ip.ipv6_prefix must be in [0..128]")
+			}
+		}
+	}
 
 	// [filters.rate_limiter]
 	if c.Filters.RateLimiter.Enabled {

@@ -148,6 +148,27 @@
 #uk = 0.0002
 #default = 0.018 # Default minimum confidence for a language to be accepted as Russian.
 
+# --- Emergency Filter ---
+#[filters.emergency]
+#enabled      = false
+#new_keys_rate  = 100.0 # Global rate of NEW pubkeys allowed per second.
+#new_keys_burst = 200 # Global burst allowance for the new key rate limiter.
+#cache_size     = 10000 # How many unique pubkeys to remember as "recently seen".
+#ttl            = "10s" # How long a pubkey is considered "not new" after its first appearance.
+
+# --- Per-IP Emergency Settings ---
+#[filters.emergency.per_ip]
+#enabled    = false
+#rate       = 5.0 # Rate of NEW pubkeys allowed per second from a single IP/subnet.
+#burst      = 10 # Burst allowance for the per-IP rate limiter.
+#cache_size = 10000 # How many unique IP/subnet limiters to keep in memory.
+#ttl        = "1m" # How long a limiter for an inactive IP/subnet is kept in memory.
+
+# --- IP Normalization ---
+# If a prefix is > 0, groups IPs into subnets. 0 or absent = disabled.
+#ipv4_prefix = 0 # CIDR prefix for IPv4 addresses (e.g., 24).
+#ipv6_prefix = 0 # CIDR prefix for IPv6 addresses (e.g., 64).
+
 # --- Global Rate Limiter ---
 #[filters.rate_limiter]
 #enabled       = false
