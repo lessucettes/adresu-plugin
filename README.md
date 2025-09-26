@@ -1,11 +1,9 @@
 
 # Adresu Plugin for Strfry
 
-[![Go Version](https://img.shields.io/badge/go-1.25-blue.svg)](https://golang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![My NIP-05](https://img.shields.io/badge/NIP--05-__@dukenukemmustdie.com-8E44AD?logo=nostr&logoColor=white)](https://dukenukemmustdie.com)
 
-**Adresu Plugin** is a powerful, high-performance plugin for the [strfry](https://github.com/hoytech/strfry) Nostr relay (though it can be used with any other relay after small adjustments), written in Go. It extends a standard relay with a sophisticated, rule-based filtering and moderation engine.
+**Adresu Plugin** is a powerful, high-performance plugin for the [strfry](https://github.com/hoytech/strfry) Nostr relay (though it can be used with any other relay after small adjustments). It extends a standard relay with a sophisticated, rule-based filtering and moderation engine.
 
 With Adresu Plugin, relay operators can enforce fine-grained policies for event acceptance, protect their servers from spam and abuse, and cultivate a higher-quality, safer environment for their users. The plugin is designed for flexibility, allowing you to enable and configure only the features you need.
 
@@ -105,6 +103,7 @@ Filters are the core of Adresu Plugin. You can enable and combine them to create
   * **Ephemeral Chat Filter**: A specialized set of rules for chats. It includes anti-flood delays, limits on capital letters and character repetition, and a hybrid PoW system that requires proof-of-work if a user exceeds the rate limit.
   * **Repost Abuse Filter**: Fights spammy behavior by calculating the ratio of reposts (kinds 6 and 16) to original content from a user. If the `max_ratio` is exceeded, further reposts are rejected.
   * **Autoban Filter**: The automated moderation engine. It issues a "strike" when a user sends an event that is rejected by other filters. If a user accumulates `max_strikes` within the `strike_window`, they are automatically banned for the `ban_duration`. You can specify which filters should not issue strikes via `exclude_filters_from_strikes`.
+  * **Emergency Filter**: Shields other filters from cache churn DDoS attacks by rate-limiting the arrival of new, unique pubkeys. It applies both a global limit (`new_keys_rate`) and a more granular per-IP/subnet limit (`per_ip.rate`) to block floods from both distributed and concentrated sources.
 
 -----
 
