@@ -1,4 +1,3 @@
-// config/watcher.go
 package config
 
 import (
@@ -11,30 +10,18 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// UpdatableFilter defines an interface for filters that support hot-reloading.
-type UpdatableFilter interface {
-	Name() string
-	UpdateConfig(cfg *Config) error
-}
-
 const defaultDebounceDelay = 500 * time.Millisecond
 
-// StartWatcher starts a goroutine that watches the config file for changes.
-func StartWatcher(ctx context.Context, configPath string, filters []UpdatableFilter, debounceDelay time.Duration) {
+func StartWatcher(ctx context.Context, configPath string, onConfigReload func(*Config), debounceDelay time.Duration) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		slog.Error("Failed to create config file watcher", "error", err)
 		return
 	}
-	defer func() {
-		if err := watcher.Close(); err != nil {
-			slog.Error("Failed to close watcher", "error", err)
-		}
-	}()
+	defer watcher.Close()
 
 	configDir := filepath.Dir(configPath)
-	err = watcher.Add(configDir)
-	if err != nil {
+	if err := watcher.Add(configDir); err != nil {
 		slog.Error("Failed to add config path to watcher", "path", configDir, "error", err)
 		return
 	}
@@ -82,15 +69,8 @@ func StartWatcher(ctx context.Context, configPath string, filters []UpdatableFil
 						return
 					}
 
-					for _, f := range filters {
-						if err := f.UpdateConfig(newCfg); err != nil {
-							slog.Error("Failed to update filter configuration",
-								"path", configPath, "filter", f.Name(), "error", err)
-						} else {
-							slog.Debug("Filter configuration updated successfully", "filter", f.Name())
-						}
-					}
-					slog.Info("Configuration reloaded successfully", "path", configPath)
+					onConfigReload(newCfg)
+					slog.Info("Configuration reloaded and applied successfully", "path", configPath)
 				})
 				mu.Unlock()
 			}

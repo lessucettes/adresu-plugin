@@ -1,99 +1,82 @@
-// policy/pipeline.go
 package policy
 
 import (
-	"adresu-plugin/config"
 	"context"
 	"log/slog"
 	"runtime/debug"
 
+	"github.com/lessucettes/adresu-plugin/config"
 	"github.com/nbd-wtf/go-nostr"
 )
 
+type PipelineStage struct {
+	Name   string
+	Filter Filter
+}
+
 type Pipeline struct {
-	filters         []Filter
+	stages          []PipelineStage
 	autoBanFilter   *AutoBanFilter
 	rejectionLevels map[string]config.LogLevel
 }
 
-func NewPipeline(cfg *config.Config, filters ...Filter) *Pipeline {
-	var abf *AutoBanFilter
-
-	for _, f := range filters {
-		if v, ok := f.(*AutoBanFilter); ok {
-			abf = v
-			break
-		}
-	}
-
+func NewPipeline(cfg *config.Config, stages []PipelineStage, abf *AutoBanFilter) *Pipeline {
 	return &Pipeline{
-		filters:         filters,
+		stages:          stages,
 		autoBanFilter:   abf,
 		rejectionLevels: cfg.Log.RejectionLevels,
 	}
 }
 
-// ProcessEvent runs an event through all filters in the pipeline.
-// It stops and returns the result of the first filter that does not accept the event.
-func (p *Pipeline) ProcessEvent(ctx context.Context, event *nostr.Event, remoteIP string, dryRun bool) (result *Result) {
+func (p *Pipeline) ProcessEvent(ctx context.Context, event *nostr.Event, remoteIP string, dryRun bool) (response PolicyResponse) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Panic recovered in filter pipeline",
-				"panic", r,
-				"event_id", event.ID,
-				"pubkey", event.PubKey,
-				"stack", string(debug.Stack()),
+				"panic", r, "event_id", event.ID, "pubkey", event.PubKey, "stack", string(debug.Stack()),
 			)
-			result = Reject("internal: an unexpected error occurred in a filter")
+			response = PolicyResponse{ID: event.ID, Action: "reject", Msg: "internal: an unexpected error occurred"}
 		}
 	}()
 
-	for _, filter := range p.filters {
-		result = filter.Check(ctx, event, remoteIP)
-		if result.Action != ActionAccept {
-			// Standardized log attributes.
+	meta := map[string]any{
+		"remote_ip": remoteIP,
+	}
+
+	for _, stage := range p.stages {
+		pass, reason := stage.Filter.Match(ctx, event, meta)
+		if !pass {
+			rejectionMsg := "blocked by " + stage.Name
+			if reason != nil {
+				rejectionMsg = reason.Error()
+			}
+
 			logAttrs := []slog.Attr{
-				slog.String("filter_name", filter.Name()),
+				slog.String("filter_name", stage.Name),
 				slog.String("remote_ip", remoteIP),
 				slog.String("event_id", event.ID),
 				slog.Int("kind", event.Kind),
 				slog.String("pubkey", event.PubKey),
-				slog.String("reason", result.Message),
+				slog.String("reason", rejectionMsg),
 			}
-
-			if len(result.SpecificAttrs) > 0 {
-				group := slog.Attr{
-					Key:   "details",
-					Value: slog.GroupValue(result.SpecificAttrs...),
-				}
-				logAttrs = append(logAttrs, group)
+			logLevel := slog.LevelWarn
+			if level, ok := p.rejectionLevels[stage.Name]; ok {
+				logLevel = level.ToSlogLevel()
 			}
+			slog.LogAttrs(ctx, logLevel, "Event rejected by filter", logAttrs...)
 
 			if dryRun {
 				slog.LogAttrs(ctx, slog.LevelInfo, "Dry-run: Event would be rejected", logAttrs...)
-				return Accept()
+				return PolicyResponse{ID: event.ID, Action: "accept"}
 			}
 
 			if p.autoBanFilter != nil {
-				p.autoBanFilter.HandleRejection(ctx, event, filter.Name())
+				p.autoBanFilter.HandleRejection(ctx, event, stage.Name)
 			}
 
-			logLevel := slog.LevelWarn // Default to Warn
-			if level, ok := p.rejectionLevels[filter.Name()]; ok {
-				logLevel = level.ToSlogLevel() // Use configured level if present.
-			}
-
-			slog.LogAttrs(ctx, logLevel, "Event rejected by filter", logAttrs...)
-
-			return result
+			return PolicyResponse{ID: event.ID, Action: "reject", Msg: rejectionMsg}
 		}
 	}
 
 	slog.Debug("Event accepted by all filters", "event_id", event.ID, "pubkey", event.PubKey)
-	return Accept()
-}
-
-// Filters returns the list of filters in the pipeline.
-func (p *Pipeline) Filters() []Filter {
-	return p.filters
+	return PolicyResponse{ID: event.ID, Action: "accept"}
 }

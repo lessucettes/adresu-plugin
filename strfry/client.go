@@ -1,4 +1,3 @@
-// strfry/client.go
 package strfry
 
 import (

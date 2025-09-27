@@ -1,41 +1,44 @@
 
-# Adresu Plugin for Strfry
+# Adresu Plugin for strfry
 
 [![My NIP-05](https://img.shields.io/badge/NIP--05-__@dukenukemmustdie.com-8E44AD?logo=nostr&logoColor=white)](https://dukenukemmustdie.com)
 
-**Adresu Plugin** is a powerful, high-performance plugin for the [strfry](https://github.com/hoytech/strfry) Nostr relay (though it can be used with any other relay after small adjustments). It extends a standard relay with a sophisticated, rule-based filtering and moderation engine.
+A policy plugin for the [strfry](https://github.com/hoytech/strfry) Nostr relay (though it can be used with any other relay after small adjustments).
 
-With Adresu Plugin, relay operators can enforce fine-grained policies for event acceptance, protect their servers from spam and abuse, and cultivate a higher-quality, safer environment for their users. The plugin is designed for flexibility, allowing you to enable and configure only the features you need.
+This plugin acts as an orchestration layer for the filter library [adresu-kit](https://github.com/lessucettes/adresu-kit). It extends the stateless filtering capabilities of the library with stateful moderation tools that require direct integration with a database and the `strfry` command-line interface. With Adresu Plugin, relay operators can enforce fine-grained policies for event acceptance, protect their servers from spam and abuse, and cultivate a higher-quality, safer environment for their users. 
 
------
+---
 
-## ✨ Key Features
+## 🛡️ Core Components
 
-  * **Advanced Event Filtering**: A multi-layered system to inspect and reject events based on their age, size, tags, content, and even language.
-  * **Automated Moderation**: An automatic banning system that issues "strikes" to users for policy violations, leading to temporary bans.
-  * **Anti-Spam & Rate Limiting**: Powerful rate limiters to prevent event flooding, with support for limits by IP, pubkey, or both. Includes special protections for ephemeral (Bitchat) chats.
-  * **Flexible Configuration**: All features are managed through a single, well-documented `config.toml` file, allowing you to tailor the relay's behavior precisely.
+* **Filter Pipeline**: Executes a sequence of filters from `adresu-kit` and this plugin.
+* **Stateful Moderation**: Provides filters that depend on an external state (a BadgerDB database).
+    * **Banned Author Checks**: Rejects events from authors in a persistent ban list.
+    * **Moderator Actions**: Allows a moderator to ban/unban users via Nostr reactions. Banning triggers a call to `strfry delete` to purge the user's events.
+    * **Autoban**: Automatically bans users based on a configurable number of "strikes" (rejected events).
+* **Hot-Reload**: The `config.toml` can be reloaded on the fly without restarting the plugin.
 
------
+---
 
-## 🚀 Getting Started
-
-### Installation
-
-To install the plugin, clone the repository and build the binary from the source.
+## 🚀 Installation
 
 ```bash
 # Clone the repository
 git clone https://github.com/lessucettes/adresu-plugin.git
 cd adresu-plugin
 
+# Fetch dependencies
+go get
+
 # Build the binary
 go build
 ```
 
-### Usage
+-----
 
-The plugin is operated via the command line.
+## ✨ Usage
+
+The plugin is executed by `strfry` and communicates over `stdin`/`stdout`.
 
 ```bash
 Usage of adresu-plugin:
@@ -43,76 +46,29 @@ Usage of adresu-plugin:
         Path to the configuration file. (default "./config.toml")
   -dry-run
         Log what would be rejected without actually rejecting it.
-  -use-defaults
-        Run with internal defaults if the config file is missing.
   -validate
         Validate the configuration file and exit.
   -version
         Show plugin version and exit.
 ```
 
-**Examples:**
+**Example `strfry.conf` entry:**
 
-  * **Run with a specific config:**
-
-    ```bash
-    ./adresu-plugin -config /etc/adresu/config.toml
-    ```
-
-  * **Validate your configuration file:**
-
-    ```bash
-    ./adresu-plugin -validate
-    ```
+```
+writePolicy {
+  plugin = "/path/to/adresu-plugin -config /etc/adresu/config.toml"
+}
+```
 
 -----
 
 ## ⚙️ Configuration
 
-Adresu Plugin is configured using a `config.toml` file. A fully-commented template is provided in `config.toml.example`.
-
-1.  **Create your configuration:**
-
-    ```bash
-    cp config.toml.example config.toml
-    ```
-
-2.  **Edit `config.toml`:** Open the file and customize the settings. Uncomment the sections for the filters you wish to enable and adjust their parameters.
-
------
-
-## 🛡️ Filters Overview
-
-Filters are the core of Adresu Plugin. You can enable and combine them to create a robust moderation policy.
-
-### Policy Filters
-
-  * **Kind Filter**: The most basic filter. It allows you to define which event `kinds` are accepted or rejected by the relay using `allowed_kinds` and `denied_kinds` lists.
-  * **Freshness Filter**: Rejects events with a `created_at` timestamp that is too old (`max_past`) or too far in the future (`max_future`). This helps prevent replay attacks and clock-skew issues.
-  * **Size Filter**: Enforces limits on the total size of an event in bytes. You can set a `default_max_size_bytes` and create specific rules for different event kinds.
-
-### Content & Structure Filters
-
-  * **Tags Filter**: Provides granular control over event tags. You can set the maximum number of tags (`max_tags`), require specific tags to be present (`required_tags`), and limit the count of individual tag types (`max_tag_counts`).
-  * **Keywords Filter**: Scans event content for deny-listed words (`words`) or complex patterns using regular expressions (`regexps`). Ideal for blocking common spam, malicious links, or unwanted content.
-  * **Language Filter**: Restricts events to a specific list of languages (`allowed_languages`). It's effective for regional relays or communities with a primary language.
-
-### Anti-Spam & Abuse Filters
-
-  * **Rate Limiter**: A powerful tool to prevent spam and flooding. It can limit users by `ip`, `pubkey`, or `both`. You can set a default rate and burst and define stricter rules for specific event kinds.
-  * **Ephemeral Chat Filter**: A specialized set of rules for chats. It includes anti-flood delays, limits on capital letters and character repetition, and a hybrid PoW system that requires proof-of-work if a user exceeds the rate limit.
-  * **Repost Abuse Filter**: Fights spammy behavior by calculating the ratio of reposts (kinds 6 and 16) to original content from a user. If the `max_ratio` is exceeded, further reposts are rejected.
-  * **Autoban Filter**: The automated moderation engine. It issues a "strike" when a user sends an event that is rejected by other filters. If a user accumulates `max_strikes` within the `strike_window`, they are automatically banned for the `ban_duration`. You can specify which filters should not issue strikes via `exclude_filters_from_strikes`.
-  * **Emergency Filter**: Shields other filters from cache churn DDoS attacks by rate-limiting the arrival of new, unique pubkeys. It applies both a global limit (`new_keys_rate`) and a more granular per-IP/subnet limit (`per_ip.rate`) to block floods from both distributed and concentrated sources.
-
------
-
-## 🤝 Contributing
-
-Contributions are welcome\! If you have a suggestion or find a bug, please open an issue or submit a pull request.
+All behavior is controlled via `config.toml`. See `config.toml.example` for a full list of options. The configuration allows you to chain any filters from `adresu-kit` and enable the stateful moderation policies of this plugin.
 
 -----
 
 ## 📄 License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
+

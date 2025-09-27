@@ -1,9 +1,6 @@
-// policy/autoban_filter.go
 package policy
 
 import (
-	"adresu-plugin/config"
-	"adresu-plugin/store"
 	"context"
 	"log/slog"
 	"slices"
@@ -11,6 +8,8 @@ import (
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/lessucettes/adresu-plugin/config"
+	"github.com/lessucettes/adresu-plugin/store"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -42,13 +41,6 @@ func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) *AutoBanFi
 		banningCooldown: cooldownCache,
 		cfg:             cfg,
 	}
-}
-
-func (f *AutoBanFilter) Name() string { return "AutoBanFilter" }
-
-// Check does nothing, as this filter only acts on rejections.
-func (f *AutoBanFilter) Check(ctx context.Context, event *nostr.Event, remoteIP string) *Result {
-	return Accept()
 }
 
 // HandleRejection is called when an event has been rejected by another filter.

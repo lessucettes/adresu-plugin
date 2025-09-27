@@ -1,13 +1,12 @@
-// policy/moderation_filter.go
 package policy
 
 import (
-	"adresu-plugin/store"
-	"adresu-plugin/strfry"
 	"context"
 	"log/slog"
 	"time"
 
+	"github.com/lessucettes/adresu-plugin/store"
+	"github.com/lessucettes/adresu-plugin/strfry"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -31,20 +30,22 @@ func NewModerationFilter(moderatorPubKey, banEmoji, unbanEmoji string, s store.S
 		banDuration:     banDuration,
 	}
 }
-func (f *ModerationFilter) Name() string { return "ModerationFilter" }
 
-func (f *ModerationFilter) Check(ctx context.Context, event *nostr.Event, remoteIP string) *Result {
+func (f *ModerationFilter) Match(ctx context.Context, event *nostr.Event, meta map[string]any) (bool, error) {
 	if f.moderatorPubKey == "" || event.Kind != nostr.KindReaction || event.PubKey != f.moderatorPubKey {
-		return Accept()
+		return true, nil
 	}
+
 	pTag := event.Tags.FindLast("p")
 	if len(pTag) < 2 {
-		return Accept()
+		return true, nil
 	}
+
 	pubkeyToModify := pTag[1]
 	if !nostr.IsValidPublicKey(pubkeyToModify) || pubkeyToModify == f.moderatorPubKey {
-		return Accept()
+		return true, nil
 	}
+
 	switch event.Content {
 	case f.banEmoji:
 		slog.Info("Moderator action: banning pubkey", "banned_pubkey", pubkeyToModify)
@@ -58,5 +59,6 @@ func (f *ModerationFilter) Check(ctx context.Context, event *nostr.Event, remote
 			slog.Error("Moderation failed to remove ban", "error", err, "unbanned_pubkey", pubkeyToModify)
 		}
 	}
-	return Accept()
+
+	return true, nil
 }

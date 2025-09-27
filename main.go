@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -12,79 +11,33 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
-	"adresu-plugin/config"
-	"adresu-plugin/policy"
-	"adresu-plugin/store"
-	"adresu-plugin/strfry"
+	kitpolicy "github.com/lessucettes/adresu-kit/policy"
+	"github.com/lessucettes/adresu-plugin/config"
+	"github.com/lessucettes/adresu-plugin/policy"
+	"github.com/lessucettes/adresu-plugin/store"
+	"github.com/lessucettes/adresu-plugin/strfry"
 
 	"github.com/nbd-wtf/go-nostr"
 )
 
-// version is set at build time.
 var version = "dev"
 
-// PolicyInput models strfry's JSON line for policy plugins.
-// Newer strfry sends source metadata via sourceType/sourceInfo,
-// older setups may still send top-level "ip".
 type PolicyInput struct {
-	Type       string      `json:"type,omitempty"` // "new" | "lookback" (not used, but kept for completeness)
+	Type       string      `json:"type,omitempty"`
 	Event      nostr.Event `json:"event"`
-	ReceivedAt int64       `json:"receivedAt,omitempty"` // unix seconds (not used here)
-	SourceType string      `json:"sourceType,omitempty"` // "IP4" | "IP6" | "Import" | "Stream" | "Sync" | "Stored"
-	SourceInfo string      `json:"sourceInfo,omitempty"` // IP or relay URL depending on sourceType
-
-	// Back-compat with very old strfry/bridges that emitted { ip: "..." } at top-level
-	IP string `json:"ip,omitempty"`
+	SourceType string      `json:"sourceType,omitempty"`
+	SourceInfo string      `json:"sourceInfo,omitempty"`
+	IP         string      `json:"ip,omitempty"`
 }
 
-// PolicyResponse defines the structure of the JSON output for strfry.
-type PolicyResponse struct {
-	ID     string `json:"id"`
-	Action string `json:"action"`
-	Msg    string `json:"msg,omitempty"`
-}
+var (
+	currentPipeline *policy.Pipeline
+	pipelineMutex   sync.RWMutex
+)
 
-func main() {
-	// --- Flag Definition ---
-	showVersion := flag.Bool("version", false, "Show plugin version and exit")
-	configPath := flag.String("config", "./config.toml", "Path to the configuration file.")
-	useDefaults := flag.Bool("use-defaults", false, "Run with internal defaults if the config file is missing.")
-	validateConfig := flag.Bool("validate", false, "Validate the configuration file and exit.")
-	dryRun := flag.Bool("dry-run", false, "Log what would be rejected without actually rejecting it.")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "adresu-plugin: A policy plugin for strfry (version: %s).\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-		flag.PrintDefaults()
-	}
-	flag.Parse()
-
-	// --- Mode Dispatch ---
-	if *showVersion {
-		fmt.Println(version)
-		return
-	}
-
-	if *validateConfig {
-		if err := validateConfiguration(*configPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Configuration is INVALID: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("Configuration is VALID.")
-		return
-	}
-
-	if err := runApp(*configPath, *useDefaults, *dryRun); err != nil {
-		// Logger might not be initialized yet, so use fmt for this final error.
-		fmt.Fprintf(os.Stderr, "Application run failed: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-// buildPipeline initializes and wires up all major application components.
-// It returns the policy pipeline, the database connection, and any startup error.
 func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 	db, err := store.NewBadgerStore(cfg.DB.Path)
 	if err != nil {
@@ -93,199 +46,225 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 
 	strfryClient := strfry.NewClient(cfg.Strfry.ExecutablePath, cfg.Strfry.ConfigPath)
 
-	keywordFilter, err := policy.NewKeywordFilter(&cfg.Filters.Keywords)
-	if err != nil {
-		db.Close() // Clean up the DB connection if a later step fails.
-		return nil, nil, fmt.Errorf("failed to create KeywordFilter: %w", err)
+	var stages []policy.PipelineStage
+
+	type filterFactory struct {
+		name        string
+		constructor func() (policy.Filter, []string, error)
 	}
 
-	languageDetector := policy.GetGlobalDetector()
+	langDetector := kitpolicy.GetGlobalDetector()
 
-	pipeline := policy.NewPipeline(
-		cfg,
-		policy.NewEmergencyFilter(&cfg.Filters.Emergency),
-		policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan),
-		policy.NewKindFilter(cfg.Policy.AllowedKinds, cfg.Policy.DeniedKinds),
-		policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor),
-		policy.NewEphemeralChatFilter(&cfg.Filters.EphemeralChat),
-		policy.NewRateLimiterFilter(&cfg.Filters.RateLimiter),
-		policy.NewFreshnessFilter(&cfg.Filters.Freshness),
-		policy.NewRepostAbuseFilter(&cfg.Filters.RepostAbuse),
-		policy.NewSizeFilter(&cfg.Filters.Size),
-		policy.NewTagsFilter(&cfg.Filters.Tags),
-		keywordFilter,
-		policy.NewLanguageFilter(&cfg.Filters.Language, languageDetector),
-		policy.NewModerationFilter(
-			cfg.Policy.ModeratorPubKey,
-			cfg.Policy.BanEmoji,
-			cfg.Policy.UnbanEmoji,
-			db,
-			strfryClient,
-			cfg.Policy.BanDuration,
-		),
+	factories := []filterFactory{
+		{"KindFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewKindFilter(&cfg.Filters.Kind)
+		}},
+		{"EmergencyFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewEmergencyFilter(&cfg.Filters.Emergency)
+		}},
+		{"RateLimiterFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewRateLimiterFilter(&cfg.Filters.RateLimiter)
+		}},
+		{"FreshnessFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewFreshnessFilter(&cfg.Filters.Freshness)
+		}},
+		{"SizeFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewSizeFilter(&cfg.Filters.Size)
+		}},
+		{"TagsFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewTagsFilter(&cfg.Filters.Tags)
+		}},
+		{"KeywordFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewKeywordFilter(&cfg.Filters.Keywords)
+		}},
+		{"RepostAbuseFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewRepostAbuseFilter(&cfg.Filters.RepostAbuse)
+		}},
+		{"EphemeralChatFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewEphemeralChatFilter(&cfg.Filters.EphemeralChat)
+		}},
+		{"LanguageFilter", func() (policy.Filter, []string, error) {
+			return kitpolicy.NewLanguageFilter(&cfg.Filters.Language, langDetector)
+		}},
+	}
+
+	for _, factory := range factories {
+		filter, warns, err := factory.constructor()
+		if err != nil {
+			db.Close()
+			return nil, nil, fmt.Errorf("failed to create %s: %w", factory.name, err)
+		}
+		if len(warns) > 0 {
+			for _, w := range warns {
+				slog.Warn("Configuration warning", "filter", factory.name, "message", w)
+			}
+		}
+		if filter != nil {
+			stages = append(stages, policy.PipelineStage{Name: factory.name, Filter: filter})
+		}
+	}
+
+	bannedAuthorFilter := policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor)
+	stages = append(stages, policy.PipelineStage{Name: "BannedAuthorFilter", Filter: bannedAuthorFilter})
+
+	moderationFilter := policy.NewModerationFilter(
+		cfg.Policy.ModeratorPubKey, cfg.Policy.BanEmoji, cfg.Policy.UnbanEmoji, db, strfryClient, cfg.Policy.BanDuration,
 	)
+	stages = append(stages, policy.PipelineStage{Name: "ModerationFilter", Filter: moderationFilter})
+
+	autoBanFilter := policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan)
+	pipeline := policy.NewPipeline(cfg, stages, autoBanFilter)
 
 	return pipeline, db, nil
 }
 
-// validateConfiguration loads and validates the config file, then exits.
-func validateConfiguration(configPath string) error {
-	// Mute all logging during validation for clean output.
-	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	slog.SetDefault(silentLogger)
+func main() {
+	showVersion := flag.Bool("version", false, "Show plugin version and exit")
+	configPath := flag.String("config", "./config.toml", "Path to the configuration file.")
+	useDefaults := flag.Bool("use-defaults", false, "Run with internal defaults if the config file is missing.")
+	validateConfig := flag.Bool("validate", false, "Validate the configuration file and exit.")
+	dryRun := flag.Bool("dry-run", false, "Log what would be rejected without actually rejecting it.")
+	flag.Parse()
 
-	fmt.Printf("Validating configuration file: %s\n", configPath)
-
-	cfg, _, err := config.Load(configPath, false)
-	if err != nil {
-		return err
+	if *showVersion {
+		fmt.Println(version)
+		return
 	}
-
-	// Attempt to build the full pipeline to validate all components.
-	_, db, err := buildPipeline(cfg)
-	if err != nil {
-		return err
+	if *validateConfig {
+		if err := validateConfiguration(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Configuration is INVALID: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Configuration is VALID.")
+		return
 	}
-
-	// The DB connection is not needed further in validation mode.
-	db.Close()
-	return nil
+	if err := runApp(*configPath, *useDefaults, *dryRun); err != nil {
+		fmt.Fprintf(os.Stderr, "Application run failed: %v\n", err)
+		os.Exit(1)
+	}
 }
 
-// runApp is the main application entry point.
 func runApp(configPath string, useDefaults bool, dryRun bool) error {
-	// --- Configuration & Logging ---
 	cfg, defaultsUsed, err := config.Load(configPath, useDefaults)
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: cfg.Log.Level.ToSlogLevel(),
-	}))
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.Log.Level.ToSlogLevel()}))
 	slog.SetDefault(logger)
-
 	if dryRun {
-		slog.Warn("Plugin is running in DRY-RUN mode. All 'reject' actions will be logged but not enforced.")
+		slog.Warn("Plugin is running in DRY-RUN mode.")
 	}
+	slog.Info("Policy plugin starting up", "version", version, "config_path", configPath, "using_defaults", defaultsUsed)
 
-	slog.Info("Policy plugin starting up",
-		"version", version,
-		"config_path", configPath,
-		"using_defaults", defaultsUsed,
-	)
-
-	// --- Dependencies & Pipeline ---
-	pipeline, db, err := buildPipeline(cfg)
+	p, db, err := buildPipeline(cfg)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	// --- Graceful Shutdown Setup ---
+	pipelineMutex.Lock()
+	currentPipeline = p
+	pipelineMutex.Unlock()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
-		sig := <-shutdownChan
-		slog.Info("Received shutdown signal, shutting down gracefully...", "signal", sig.String())
+		<-shutdownChan
+		slog.Info("Received shutdown signal, shutting down gracefully...")
 		cancel()
 	}()
 
-	// --- Background Services ---
-	var updatableFilters []config.UpdatableFilter
-	for _, f := range pipeline.Filters() {
-		if updatable, ok := f.(config.UpdatableFilter); ok {
-			updatableFilters = append(updatableFilters, updatable)
+	onReload := func(newCfg *config.Config) {
+		slog.Info("Reloading pipeline with new configuration...")
+		newPipeline, _, err := buildPipeline(newCfg)
+		if err != nil {
+			slog.Error("Failed to build new pipeline on config reload, keeping old one", "error", err)
+			return
 		}
-	}
-	go config.StartWatcher(ctx, configPath, updatableFilters, 0)
 
-	// --- Main Event Loop ---
-	return processEvents(ctx, os.Stdin, os.Stdout, pipeline, dryRun)
+		pipelineMutex.Lock()
+		currentPipeline = newPipeline
+		pipelineMutex.Unlock()
+		slog.Info("Pipeline reloaded successfully.")
+	}
+	go config.StartWatcher(ctx, configPath, onReload, 0)
+
+	return processEvents(ctx, os.Stdin, os.Stdout, dryRun)
 }
 
-// processEvents runs the main I/O loop, processing events from stdin
-// and writing responses to stdout. It's designed to be cancellable via the context.
-func processEvents(ctx context.Context, r io.Reader, w io.Writer, p *policy.Pipeline, dryRun bool) error {
+func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) error {
 	linesChan := make(chan []byte)
 	errChan := make(chan error, 1)
 	encoder := json.NewEncoder(w)
 
-	// Start a scanner in a separate goroutine to avoid blocking the main loop.
 	go func() {
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
-			line := scanner.Bytes()
-			lineCopy := make([]byte, len(line))
-			copy(lineCopy, line)
+			lineCopy := make([]byte, len(scanner.Bytes()))
+			copy(lineCopy, scanner.Bytes())
 			linesChan <- lineCopy
 		}
-		// Report the final status (nil on clean EOF, or an error).
 		errChan <- scanner.Err()
 	}()
 
 	slog.Info("Ready to process events from stdin...")
-
-	const maxLogLineLength = 256 // Max length of a raw line to log on error.
-
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Context canceled, shutting down event processing.")
 			return ctx.Err()
-
 		case err := <-errChan:
 			if err != nil {
-				slog.Error("Error reading from stdin", "error", err)
 				return err
 			}
 			slog.Info("Input stream closed, shutting down.")
 			return nil
-
 		case line := <-linesChan:
 			if len(line) == 0 {
 				continue
 			}
-
 			var input PolicyInput
 			if err := json.Unmarshal(line, &input); err != nil {
-				truncatedLine := string(line)
-				if len(truncatedLine) > maxLogLineLength {
-					truncatedLine = truncatedLine[:maxLogLineLength]
-				}
-				slog.Warn("Failed to decode policy input JSON", "error", err, "raw_line_prefix", truncatedLine)
+				slog.Warn("Failed to decode policy input JSON", "error", err, "raw_line_prefix", string(line))
 				continue
 			}
 
-			// Derive remote IP from modern or legacy fields.
 			remoteIP := ""
-			switch input.SourceType {
-			case "IP4", "IP6":
+			if input.SourceType == "IP4" || input.SourceType == "IP6" {
 				remoteIP = input.SourceInfo
-			}
-			if remoteIP == "" && input.IP != "" { // legacy fallback
+			} else if input.IP != "" {
 				remoteIP = input.IP
 			}
 
+			pipelineMutex.RLock()
+			p := currentPipeline
+			pipelineMutex.RUnlock()
+
 			result := p.ProcessEvent(ctx, &input.Event, remoteIP, dryRun)
 
-			response := PolicyResponse{
-				ID:     input.Event.ID,
-				Action: result.Action,
-				Msg:    result.Message,
-			}
-
-			if err := encoder.Encode(response); err != nil {
+			if err := encoder.Encode(result); err != nil {
 				if errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EPIPE) {
-					slog.Warn("Stdout pipe closed by the parent process, shutting down.", "error", err)
-					return nil // Clean shutdown condition.
+					return nil
 				}
 				slog.Error("Failed to write response to stdout", "error", err)
 			}
 		}
 	}
+}
+
+func validateConfiguration(configPath string) error {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	fmt.Printf("Validating configuration file: %s\n", configPath)
+	cfg, _, err := config.Load(configPath, false)
+	if err != nil {
+		return err
+	}
+	_, db, err := buildPipeline(cfg)
+	if err != nil {
+		return err
+	}
+	db.Close()
+	return nil
 }

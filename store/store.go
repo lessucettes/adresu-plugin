@@ -1,4 +1,3 @@
-// store/store.go
 package store
 
 import (
