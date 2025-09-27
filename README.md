@@ -5,7 +5,7 @@
 
 A policy plugin for the [strfry](https://github.com/hoytech/strfry) Nostr relay (though it can be used with any other relay after small adjustments).
 
-This plugin acts as an orchestration layer for the filter library [adresu-kit](https://github.com/lessucettes/adresu-kit). It extends the stateless filtering capabilities of the library with stateful moderation tools that require direct integration with a database and the `strfry` command-line interface. With Adresu Plugin, relay operators can enforce fine-grained policies for event acceptance, protect their servers from spam and abuse, and cultivate a higher-quality, safer environment for their users. 
+This plugin acts as an orchestration layer for the filter library [Adresu Kit](https://github.com/lessucettes/adresu-kit). It extends the stateless filtering capabilities of the library with stateful moderation tools that require direct integration with a database and the `strfry` command-line interface. With Adresu Plugin, relay operators can enforce fine-grained policies for event acceptance, protect their servers from spam and abuse, and cultivate a higher-quality, safer environment for their users. 
 
 ---
 
@@ -46,6 +46,8 @@ Usage of adresu-plugin:
         Path to the configuration file. (default "./config.toml")
   -dry-run
         Log what would be rejected without actually rejecting it.
+  -use-defaults
+        Run with internal defaults if the config file is missing.
   -validate
         Validate the configuration file and exit.
   -version
