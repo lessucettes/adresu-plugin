@@ -40,7 +40,7 @@ go build
 
 The plugin is executed by `strfry` and communicates over `stdin`/`stdout`.
 
-```bash
+```
 Usage of adresu-plugin:
   -config string
         Path to the configuration file. (default "./config.toml")
