@@ -51,8 +51,8 @@ func buildPipeline(cfg *config.Config, db store.Store) (*policy.Pipeline, error)
 	langDetector := kitpolicy.GetGlobalDetector()
 
 	kitFactories := []kitFilterFactory{
-		{"KindFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewKindFilter(&cfg.Filters.Kind) }},
 		{"EmergencyFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewEmergencyFilter(&cfg.Filters.Emergency) }},
+		{"KindFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewKindFilter(&cfg.Filters.Kind) }},
 		{"RateLimiterFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewRateLimiterFilter(&cfg.Filters.RateLimiter) }},
 		{"FreshnessFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewFreshnessFilter(&cfg.Filters.Freshness) }},
 		{"SizeFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewSizeFilter(&cfg.Filters.Size) }},
