@@ -2,8 +2,6 @@ package policy
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -12,13 +10,15 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/lessucettes/adresu-kit/nip"
+	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/sync/singleflight"
 )
 
 const (
-	defaultCacheSize = 8192
-	defaultCacheTTL  = 5 * time.Minute
+	defaultCacheSize       = 8192
+	defaultCacheTTL        = 5 * time.Minute
+	bannedAuthorFilterName = "BannedAuthorFilter"
 )
 
 type BannedAuthorFilter struct {
@@ -28,13 +28,13 @@ type BannedAuthorFilter struct {
 	cfg   *config.BannedAuthorFilterConfig
 }
 
-func NewBannedAuthorFilter(s store.Store, cfg *config.BannedAuthorFilterConfig) *BannedAuthorFilter {
+func NewBannedAuthorFilter(s store.Store, cfg *config.BannedAuthorFilterConfig) (*BannedAuthorFilter, error) {
 	cache := lru.NewLRU[string, bool](defaultCacheSize, nil, defaultCacheTTL)
 	return &BannedAuthorFilter{
 		store: s,
 		cache: cache,
 		cfg:   cfg,
-	}
+	}, nil
 }
 
 func (f *BannedAuthorFilter) isBanned(ctx context.Context, pubkey string) (bool, error) {
@@ -62,39 +62,39 @@ func (f *BannedAuthorFilter) isBanned(ctx context.Context, pubkey string) (bool,
 	return v.(bool), nil
 }
 
-func (f *BannedAuthorFilter) Match(ctx context.Context, event *nostr.Event, meta map[string]any) (bool, error) {
+func (f *BannedAuthorFilter) Match(ctx context.Context, event *nostr.Event, meta map[string]any) (kitpolicy.FilterResult, error) {
+	newResult := kitpolicy.NewResultFunc(bannedAuthorFilterName)
+
 	if event == nil {
-		return false, fmt.Errorf("blocked: invalid event")
+		return newResult(false, "invalid_event", nil)
 	}
 
 	banned, err := f.isBanned(ctx, event.PubKey)
 	if err != nil {
-		slog.Error("Failed to check author ban status, rejecting (fail-closed)", "pubkey", event.PubKey, "error", err)
-		return false, fmt.Errorf("internal: verification error")
+		return newResult(false, "internal_author_check_failed", err)
 	}
 	if banned {
-		return false, fmt.Errorf("blocked: author %s is banned", event.PubKey)
+		return newResult(false, "author_banned", nil)
 	}
 
 	if f.cfg != nil && f.cfg.CheckNIP26 {
 		if delegationTag := event.Tags.Find("delegation"); delegationTag != nil {
 			delegator, err := nip.ValidateDelegation(event)
 			if err != nil {
-				return false, fmt.Errorf("blocked: invalid delegation: %w", err)
+				return newResult(false, "invalid_delegation", nil)
 			}
 
 			if delegator != "" {
 				banned, err := f.isBanned(ctx, delegator)
 				if err != nil {
-					slog.Error("Failed to check delegator ban status", "delegator", delegator, "error", err)
-					return false, fmt.Errorf("internal: verification error")
+					return newResult(false, "internal_delegator_check_failed", err)
 				}
 				if banned {
-					return false, fmt.Errorf("blocked: delegator %s is banned", delegator)
+					return newResult(false, "delegator_banned", nil)
 				}
 			}
 		}
 	}
 
-	return true, nil
+	return newResult(true, "author_not_banned", nil)
 }

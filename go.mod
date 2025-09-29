@@ -7,7 +7,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.8.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/lessucettes/adresu-kit v0.1.1
+	github.com/lessucettes/adresu-kit v0.1.2
 	github.com/nbd-wtf/go-nostr v0.52.0
 	golang.org/x/sync v0.12.0
 )

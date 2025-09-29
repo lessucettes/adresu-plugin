@@ -48,72 +48,69 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 
 	var stages []policy.PipelineStage
 
-	type filterFactory struct {
+	// Factories for Adresu Kit filters.
+	// The constructor now explicitly returns the interface from the kit.
+	type kitFilterFactory struct {
 		name        string
-		constructor func() (policy.Filter, []string, error)
+		constructor func() (kitpolicy.Filter, error)
 	}
 
 	langDetector := kitpolicy.GetGlobalDetector()
 
-	factories := []filterFactory{
-		{"KindFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewKindFilter(&cfg.Filters.Kind)
-		}},
-		{"EmergencyFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewEmergencyFilter(&cfg.Filters.Emergency)
-		}},
-		{"RateLimiterFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewRateLimiterFilter(&cfg.Filters.RateLimiter)
-		}},
-		{"FreshnessFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewFreshnessFilter(&cfg.Filters.Freshness)
-		}},
-		{"SizeFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewSizeFilter(&cfg.Filters.Size)
-		}},
-		{"TagsFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewTagsFilter(&cfg.Filters.Tags)
-		}},
-		{"KeywordFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewKeywordFilter(&cfg.Filters.Keywords)
-		}},
-		{"RepostAbuseFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewRepostAbuseFilter(&cfg.Filters.RepostAbuse)
-		}},
-		{"EphemeralChatFilter", func() (policy.Filter, []string, error) {
-			return kitpolicy.NewEphemeralChatFilter(&cfg.Filters.EphemeralChat)
-		}},
-		{"LanguageFilter", func() (policy.Filter, []string, error) {
+	kitFactories := []kitFilterFactory{
+		{"KindFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewKindFilter(&cfg.Filters.Kind) }},
+		{"EmergencyFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewEmergencyFilter(&cfg.Filters.Emergency) }},
+		{"RateLimiterFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewRateLimiterFilter(&cfg.Filters.RateLimiter) }},
+		{"FreshnessFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewFreshnessFilter(&cfg.Filters.Freshness) }},
+		{"SizeFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewSizeFilter(&cfg.Filters.Size) }},
+		{"TagsFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewTagsFilter(&cfg.Filters.Tags) }},
+		{"KeywordFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewKeywordFilter(&cfg.Filters.Keywords) }},
+		{"RepostAbuseFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewRepostAbuseFilter(&cfg.Filters.RepostAbuse) }},
+		{"EphemeralChatFilter", func() (kitpolicy.Filter, error) { return kitpolicy.NewEphemeralChatFilter(&cfg.Filters.EphemeralChat) }},
+		{"LanguageFilter", func() (kitpolicy.Filter, error) {
 			return kitpolicy.NewLanguageFilter(&cfg.Filters.Language, langDetector)
 		}},
 	}
 
-	for _, factory := range factories {
-		filter, warns, err := factory.constructor()
+	for _, factory := range kitFactories {
+		filter, err := factory.constructor()
 		if err != nil {
 			db.Close()
-			return nil, nil, fmt.Errorf("failed to create %s: %w", factory.name, err)
-		}
-		if len(warns) > 0 {
-			for _, w := range warns {
-				slog.Warn("Configuration warning", "filter", factory.name, "message", w)
-			}
+			return nil, nil, fmt.Errorf("failed to create kit filter '%s': %w", factory.name, err)
 		}
 		if filter != nil {
-			stages = append(stages, policy.PipelineStage{Name: factory.name, Filter: filter})
+			stages = append(stages, policy.PipelineStage{Filter: filter})
 		}
 	}
 
-	bannedAuthorFilter := policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor)
-	stages = append(stages, policy.PipelineStage{Name: "BannedAuthorFilter", Filter: bannedAuthorFilter})
+	// Local plugin filters. They must also implement the kit's Filter interface.
+	bannedAuthorFilter, err := policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("failed to create BannedAuthorFilter: %w", err)
+	}
+	stages = append(stages, policy.PipelineStage{Filter: bannedAuthorFilter})
 
-	moderationFilter := policy.NewModerationFilter(
+	moderationFilter, err := policy.NewModerationFilter(
 		cfg.Policy.ModeratorPubKey, cfg.Policy.BanEmoji, cfg.Policy.UnbanEmoji, db, strfryClient, cfg.Policy.BanDuration,
 	)
-	stages = append(stages, policy.PipelineStage{Name: "ModerationFilter", Filter: moderationFilter})
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("failed to create ModerationFilter: %w", err)
+	}
+	stages = append(stages, policy.PipelineStage{Filter: moderationFilter})
 
-	autoBanFilter := policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan)
-	pipeline := policy.NewPipeline(cfg, stages, autoBanFilter)
+	// Setup rejection handlers.
+	autoBanFilter, err := policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("failed to create AutoBanFilter: %w", err)
+	}
+	rejectionHandlers := []policy.RejectionHandler{autoBanFilter}
+
+	// We don't have a metrics collector yet, so we pass nil.
+	var metricsCollector policy.MetricsCollector = nil
+	pipeline := policy.NewPipeline(cfg, stages, rejectionHandlers, metricsCollector)
 
 	return pipeline, db, nil
 }
@@ -207,7 +204,10 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 			copy(lineCopy, scanner.Bytes())
 			linesChan <- lineCopy
 		}
-		errChan <- scanner.Err()
+		if err := scanner.Err(); err != nil {
+			errChan <- err
+		}
+		close(linesChan)
 	}()
 
 	slog.Info("Ready to process events from stdin...")
@@ -215,13 +215,15 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-errChan:
-			if err != nil {
-				return err
+		case line, ok := <-linesChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					return err
+				}
+				slog.Info("Input stream closed, shutting down.")
+				return nil
 			}
-			slog.Info("Input stream closed, shutting down.")
-			return nil
-		case line := <-linesChan:
+
 			if len(line) == 0 {
 				continue
 			}
@@ -242,7 +244,11 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 			p := currentPipeline
 			pipelineMutex.RUnlock()
 
-			result := p.ProcessEvent(ctx, &input.Event, remoteIP, dryRun)
+			result, err := p.ProcessEvent(ctx, &input.Event, remoteIP, dryRun)
+			if err != nil {
+				slog.Error("Error processing event", "event_id", input.Event.ID, "error", err)
+				continue
+			}
 
 			if err := encoder.Encode(result); err != nil {
 				if errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EPIPE) {

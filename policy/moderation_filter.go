@@ -5,9 +5,14 @@ import (
 	"log/slog"
 	"time"
 
+	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/lessucettes/adresu-plugin/store"
 	"github.com/lessucettes/adresu-plugin/strfry"
 	"github.com/nbd-wtf/go-nostr"
+)
+
+const (
+	moderationFilterName = "ModerationFilter"
 )
 
 type ModerationFilter struct {
@@ -17,7 +22,7 @@ type ModerationFilter struct {
 	banDuration                           time.Duration
 }
 
-func NewModerationFilter(moderatorPubKey, banEmoji, unbanEmoji string, s store.Store, sf strfry.ClientInterface, banDuration time.Duration) *ModerationFilter {
+func NewModerationFilter(moderatorPubKey, banEmoji, unbanEmoji string, s store.Store, sf strfry.ClientInterface, banDuration time.Duration) (*ModerationFilter, error) {
 	if moderatorPubKey == "" {
 		slog.Warn("Policy.moderator_pubkey is not set in config, moderation filter will be disabled.")
 	}
@@ -28,37 +33,47 @@ func NewModerationFilter(moderatorPubKey, banEmoji, unbanEmoji string, s store.S
 		store:           s,
 		sf:              sf,
 		banDuration:     banDuration,
-	}
+	}, nil
 }
 
-func (f *ModerationFilter) Match(ctx context.Context, event *nostr.Event, meta map[string]any) (bool, error) {
+func (f *ModerationFilter) Match(ctx context.Context, event *nostr.Event, meta map[string]any) (kitpolicy.FilterResult, error) {
+	newResult := kitpolicy.NewResultFunc(moderationFilterName)
+
 	if f.moderatorPubKey == "" || event.Kind != nostr.KindReaction || event.PubKey != f.moderatorPubKey {
-		return true, nil
+		return newResult(true, "not_a_moderation_event", nil)
 	}
 
 	pTag := event.Tags.FindLast("p")
 	if len(pTag) < 2 {
-		return true, nil
+		return newResult(true, "no_pubkey_tag_in_reaction", nil)
 	}
 
 	pubkeyToModify := pTag[1]
 	if !nostr.IsValidPublicKey(pubkeyToModify) || pubkeyToModify == f.moderatorPubKey {
-		return true, nil
+		return newResult(true, "invalid_target_pubkey", nil)
 	}
 
 	switch event.Content {
 	case f.banEmoji:
 		slog.Info("Moderator action: banning pubkey", "banned_pubkey", pubkeyToModify)
 		if err := f.store.BanAuthor(ctx, pubkeyToModify, f.banDuration); err != nil {
-			slog.Error("Moderation failed to save ban", "error", err, "banned_pubkey", pubkeyToModify)
+			// A side-effect failed. Propagate the error to the pipeline.
+			return newResult(true, "moderator_ban_failed", err)
 		}
-		go f.sf.DeleteEventsByAuthor(pubkeyToModify)
+		go func() {
+			if err := f.sf.DeleteEventsByAuthor(pubkeyToModify); err != nil {
+				slog.Error("Failed to delete events after moderator ban", "error", err, "pubkey", pubkeyToModify)
+			}
+		}()
+		return newResult(true, "moderator_ban_executed", nil)
+
 	case f.unbanEmoji:
 		slog.Info("Moderator action: unbanning pubkey", "unbanned_pubkey", pubkeyToModify)
 		if err := f.store.UnbanAuthor(ctx, pubkeyToModify); err != nil {
-			slog.Error("Moderation failed to remove ban", "error", err, "unbanned_pubkey", pubkeyToModify)
+			return newResult(true, "moderator_unban_failed", err)
 		}
+		return newResult(true, "moderator_unban_executed", nil)
 	}
 
-	return true, nil
+	return newResult(true, "emoji_not_matched", nil)
 }

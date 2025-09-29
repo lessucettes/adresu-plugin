@@ -12,6 +12,6 @@ type PolicyResponse struct {
 	Msg    string `json:"msg,omitempty"`
 }
 
-type Filter interface {
-	Match(ctx context.Context, ev *nostr.Event, meta map[string]any) (pass bool, reason error)
+type RejectionHandler interface {
+	HandleRejection(ctx context.Context, ev *nostr.Event, filterName string)
 }

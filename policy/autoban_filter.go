@@ -31,7 +31,7 @@ type RejectionStats struct {
 }
 
 // NewAutoBanFilter wires dependencies and cache TTLs from config.
-func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) *AutoBanFilter {
+func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) (*AutoBanFilter, error) {
 	strikesCache := lru.NewLRU[string, *RejectionStats](cfg.StrikesCacheSize, nil, cfg.StrikeWindow)
 	cooldownCache := lru.NewLRU[string, struct{}](cfg.CooldownCacheSize, nil, cfg.CooldownDuration)
 
@@ -40,11 +40,11 @@ func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) *AutoBanFi
 		strikes:         strikesCache,
 		banningCooldown: cooldownCache,
 		cfg:             cfg,
-	}
+	}, nil
 }
 
 // HandleRejection is called when an event has been rejected by another filter.
-func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event, filterName string) {
+func (f *AutoBanFilter) HandleRejection(_ context.Context, event *nostr.Event, filterName string) {
 	if !f.cfg.Enabled {
 		return
 	}
