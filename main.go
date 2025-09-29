@@ -38,18 +38,11 @@ var (
 	pipelineMutex   sync.RWMutex
 )
 
-func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
-	db, err := store.NewBadgerStore(cfg.DB.Path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize database: %w", err)
-	}
-
+func buildPipeline(cfg *config.Config, db store.Store) (*policy.Pipeline, error) {
 	strfryClient := strfry.NewClient(cfg.Strfry.ExecutablePath, cfg.Strfry.ConfigPath)
 
 	var stages []policy.PipelineStage
 
-	// Factories for Adresu Kit filters.
-	// The constructor now explicitly returns the interface from the kit.
 	type kitFilterFactory struct {
 		name        string
 		constructor func() (kitpolicy.Filter, error)
@@ -75,19 +68,16 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 	for _, factory := range kitFactories {
 		filter, err := factory.constructor()
 		if err != nil {
-			db.Close()
-			return nil, nil, fmt.Errorf("failed to create kit filter '%s': %w", factory.name, err)
+			return nil, fmt.Errorf("failed to create kit filter '%s': %w", factory.name, err)
 		}
 		if filter != nil {
 			stages = append(stages, policy.PipelineStage{Filter: filter})
 		}
 	}
 
-	// Local plugin filters. They must also implement the kit's Filter interface.
 	bannedAuthorFilter, err := policy.NewBannedAuthorFilter(db, &cfg.Filters.BannedAuthor)
 	if err != nil {
-		db.Close()
-		return nil, nil, fmt.Errorf("failed to create BannedAuthorFilter: %w", err)
+		return nil, fmt.Errorf("failed to create BannedAuthorFilter: %w", err)
 	}
 	stages = append(stages, policy.PipelineStage{Filter: bannedAuthorFilter})
 
@@ -95,24 +85,20 @@ func buildPipeline(cfg *config.Config) (*policy.Pipeline, store.Store, error) {
 		cfg.Policy.ModeratorPubKey, cfg.Policy.BanEmoji, cfg.Policy.UnbanEmoji, db, strfryClient, cfg.Policy.BanDuration,
 	)
 	if err != nil {
-		db.Close()
-		return nil, nil, fmt.Errorf("failed to create ModerationFilter: %w", err)
+		return nil, fmt.Errorf("failed to create ModerationFilter: %w", err)
 	}
 	stages = append(stages, policy.PipelineStage{Filter: moderationFilter})
 
-	// Setup rejection handlers.
 	autoBanFilter, err := policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan)
 	if err != nil {
-		db.Close()
-		return nil, nil, fmt.Errorf("failed to create AutoBanFilter: %w", err)
+		return nil, fmt.Errorf("failed to create AutoBanFilter: %w", err)
 	}
 	rejectionHandlers := []policy.RejectionHandler{autoBanFilter}
 
-	// We don't have a metrics collector yet, so we pass nil.
 	var metricsCollector policy.MetricsCollector = nil
 	pipeline := policy.NewPipeline(cfg, stages, rejectionHandlers, metricsCollector)
 
-	return pipeline, db, nil
+	return pipeline, nil
 }
 
 func main() {
@@ -153,11 +139,16 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 	}
 	slog.Info("Policy plugin starting up", "version", version, "config_path", configPath, "using_defaults", defaultsUsed)
 
-	p, db, err := buildPipeline(cfg)
+	db, err := store.NewBadgerStore(cfg.DB.Path)
+	if err != nil {
+		return fmt.Errorf("failed to initialize database: %w", err)
+	}
+	defer db.Close()
+
+	p, err := buildPipeline(cfg, db)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 
 	pipelineMutex.Lock()
 	currentPipeline = p
@@ -176,7 +167,7 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 
 	onReload := func(newCfg *config.Config) {
 		slog.Info("Reloading pipeline with new configuration...")
-		newPipeline, _, err := buildPipeline(newCfg)
+		newPipeline, err := buildPipeline(newCfg, db)
 		if err != nil {
 			slog.Error("Failed to build new pipeline on config reload, keeping old one", "error", err)
 			return
@@ -267,10 +258,15 @@ func validateConfiguration(configPath string) error {
 	if err != nil {
 		return err
 	}
-	_, db, err := buildPipeline(cfg)
+
+	db, err := store.NewBadgerStore(cfg.DB.Path)
 	if err != nil {
+		return fmt.Errorf("failed to open database for validation: %w", err)
+	}
+	defer db.Close()
+
+	if _, err := buildPipeline(cfg, db); err != nil {
 		return err
 	}
-	db.Close()
 	return nil
 }
