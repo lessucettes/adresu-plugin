@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 
 	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/lessucettes/adresu-plugin/config"
@@ -23,6 +24,7 @@ type Pipeline struct {
 	rejectionHandlers []RejectionHandler
 	rejectionLevels   map[string]config.LogLevel
 	collector         MetricsCollector
+	wg                sync.WaitGroup
 }
 
 func NewPipeline(
@@ -45,6 +47,9 @@ func (p *Pipeline) ProcessEvent(
 	remoteIP string,
 	dryRun bool,
 ) (response PolicyResponse, err error) {
+	p.wg.Add(1)
+	defer p.wg.Done()
+
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Panic recovered in filter pipeline",
@@ -100,4 +105,17 @@ func (p *Pipeline) ProcessEvent(
 
 	slog.Debug("Event accepted by all filters", "event_id", event.ID, "pubkey", event.PubKey)
 	return PolicyResponse{ID: event.ID, Action: "accept"}, nil
+}
+
+func (p *Pipeline) Close() error {
+	p.wg.Wait()
+
+	for _, stage := range p.stages {
+		if closer, ok := stage.Filter.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				slog.Error("Failed to close a filter component", "filter", stage.Filter, "error", err)
+			}
+		}
+	}
+	return nil
 }

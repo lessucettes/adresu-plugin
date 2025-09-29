@@ -8,20 +8,18 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
+	"github.com/lessucettes/adresu-plugin/config"
 )
 
 const banPrefix = "ban:"
 
 // Store is the generic interface for all storage types.
-// It allows for easy swapping of the real database with a mock in tests.
 type Store interface {
 	IsAuthorBanned(ctx context.Context, pubkey string) (bool, error)
 	BanAuthor(ctx context.Context, pubkey string, duration time.Duration) error
 	UnbanAuthor(ctx context.Context, pubkey string) error
 	Close() error
 }
-
-// --- BADGERDB IMPLEMENTATION (PRODUCTION) ---
 
 // BadgerStore is the production-ready implementation of the Store interface using BadgerDB.
 type BadgerStore struct {
@@ -39,15 +37,9 @@ func (l *badgerLogger) Infof(f string, v ...any)    {}
 func (l *badgerLogger) Debugf(f string, v ...any)   {}
 
 // NewBadgerStore initializes and returns a new, optimized BadgerStore.
-func NewBadgerStore(path string) (*BadgerStore, error) {
-	opts := badger.DefaultOptions(path)
-
-	// Optimization: Set a value threshold. Values smaller than this (1KB) will be
-	// stored in the faster LSM-tree instead of the separate value log. Ideal for
-	// small data like ban records.
+func NewBadgerStore(cfg *config.DBConfig) (*BadgerStore, error) {
+	opts := badger.DefaultOptions(cfg.Path)
 	opts.ValueThreshold = 1024
-
-	// Redirect BadgerDB's internal logs to the application's main slog logger.
 	opts.Logger = &badgerLogger{slog.Default()}
 
 	db, err := badger.Open(opts)
@@ -55,11 +47,7 @@ func NewBadgerStore(path string) (*BadgerStore, error) {
 		return nil, fmt.Errorf("failed to open badger db: %w", err)
 	}
 
-	store := &BadgerStore{
-		db: db,
-	}
-
-	return store, nil
+	return &BadgerStore{db: db}, nil
 }
 
 // Close gracefully closes the database connection.
@@ -84,7 +72,6 @@ func (s *BadgerStore) IsAuthorBanned(ctx context.Context, pubkey string) (bool, 
 }
 
 // BanAuthor adds a pubkey to the ban list with a specified TTL.
-// The value is stored as nil to save space, as only the key's existence matters.
 func (s *BadgerStore) BanAuthor(ctx context.Context, pubkey string, duration time.Duration) error {
 	slog.Info("Banning author", "pubkey", pubkey, "duration", duration.String())
 	key := []byte(banPrefix + pubkey)

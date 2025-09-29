@@ -139,7 +139,7 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 	}
 	slog.Info("Policy plugin starting up", "version", version, "config_path", configPath, "using_defaults", defaultsUsed)
 
-	db, err := store.NewBadgerStore(cfg.DB.Path)
+	db, err := store.NewBadgerStore(&cfg.DB)
 	if err != nil {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
@@ -174,9 +174,15 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 		}
 
 		pipelineMutex.Lock()
+		oldPipeline := currentPipeline
 		currentPipeline = newPipeline
 		pipelineMutex.Unlock()
-		slog.Info("Pipeline reloaded successfully.")
+
+		if oldPipeline != nil {
+			go oldPipeline.Close() // Gracefully shutdown the old pipeline.
+		}
+
+		slog.Info("Pipeline reloaded successfully.", "path", configPath)
 	}
 	go config.StartWatcher(ctx, configPath, onReload, 0)
 
@@ -189,6 +195,7 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 	encoder := json.NewEncoder(w)
 
 	go func() {
+		defer close(errChan) // This ensures the error channel is always closed.
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			lineCopy := make([]byte, len(scanner.Bytes()))
@@ -208,6 +215,7 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 			return ctx.Err()
 		case line, ok := <-linesChan:
 			if !ok {
+				// linesChan is closed, check for a final error. This no longer blocks.
 				if err := <-errChan; err != nil {
 					return err
 				}
@@ -259,7 +267,7 @@ func validateConfiguration(configPath string) error {
 		return err
 	}
 
-	db, err := store.NewBadgerStore(cfg.DB.Path)
+	db, err := store.NewBadgerStore(&cfg.DB)
 	if err != nil {
 		return fmt.Errorf("failed to open database for validation: %w", err)
 	}

@@ -44,7 +44,7 @@ func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) (*AutoBanF
 }
 
 // HandleRejection is called when an event has been rejected by another filter.
-func (f *AutoBanFilter) HandleRejection(_ context.Context, event *nostr.Event, filterName string) {
+func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event, filterName string) {
 	if !f.cfg.Enabled {
 		return
 	}
@@ -90,21 +90,26 @@ func (f *AutoBanFilter) HandleRejection(_ context.Context, event *nostr.Event, f
 			"ban_duration", f.cfg.BanDuration,
 			"by_filter", filterName,
 		)
-		go f.banUser(pubkey)
+		go f.banUser(ctx, pubkey)
 	}
 }
 
 // banUser performs the ban operation in a separate goroutine.
-func (f *AutoBanFilter) banUser(pubkey string) {
+func (f *AutoBanFilter) banUser(parentCtx context.Context, pubkey string) {
 	timeout := f.cfg.BanTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
 
-	banCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	banCtx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	if err := f.store.BanAuthor(banCtx, pubkey, f.cfg.BanDuration); err != nil {
-		slog.Error("Failed to auto-ban author", "pubkey", pubkey, "error", err)
+		select {
+		case <-banCtx.Done():
+			slog.Warn("Auto-ban cancelled by context", "pubkey", pubkey, "error", banCtx.Err())
+		default:
+			slog.Error("Failed to auto-ban author", "pubkey", pubkey, "error", err)
+		}
 	}
 }

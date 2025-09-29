@@ -149,8 +149,11 @@ func (c *Config) validate() error {
 	if (c.Policy.BanEmoji != "" || c.Policy.UnbanEmoji != "") && c.Policy.ModeratorPubKey == "" {
 		return errors.New("policy.moderator_pubkey must be set")
 	}
+	if (c.Policy.BanEmoji != "" || c.Policy.UnbanEmoji != "") && c.Policy.BanEmoji == c.Policy.UnbanEmoji {
+		return errors.New("policy.ban_emoji and policy.unban_emoji must not be identical")
+	}
 	if common := findCommonElements(c.Filters.Kind.AllowedKinds, c.Filters.Kind.DeniedKinds); len(common) > 0 {
-		return fmt.Errorf("policy.allowed_kinds and policy.denied_kinds must not contain common kinds: %v", common)
+		return fmt.Errorf("policy.allowed_kinds and policy.denied_kinds must not overlap: %v", common)
 	}
 
 	// --- [filters] ---
