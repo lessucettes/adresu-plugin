@@ -6,10 +6,10 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/lessucettes/adresu-plugin/internal/config"
-
 	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
+
+	"github.com/lessucettes/adresu-plugin/internal/config"
 )
 
 type MetricsCollector interface {

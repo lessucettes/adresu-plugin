@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lessucettes/adresu-plugin/internal/config"
-
 	"github.com/dgraph-io/badger/v4"
+
+	"github.com/lessucettes/adresu-plugin/internal/config"
 )
 
 const banPrefix = "ban:"

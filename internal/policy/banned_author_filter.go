@@ -5,14 +5,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lessucettes/adresu-plugin/internal/config"
-	"github.com/lessucettes/adresu-plugin/internal/store"
-
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/lessucettes/adresu-kit/nip"
 	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/lessucettes/adresu-plugin/internal/config"
+	"github.com/lessucettes/adresu-plugin/internal/store"
 )
 
 const (
