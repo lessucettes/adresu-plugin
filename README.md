@@ -1,7 +1,4 @@
-
 # Adresu Plugin for strfry
-
-[![My NIP-05](https://img.shields.io/badge/NIP--05-__@dukenukemmustdie.com-8E44AD?logo=nostr&logoColor=white)](https://dukenukemmustdie.com)
 
 A policy plugin for the [strfry](https://github.com/hoytech/strfry) Nostr relay (though it can be used with any other relay after small adjustments).
 
@@ -31,7 +28,7 @@ cd adresu-plugin
 go get
 
 # Build the binary
-go build
+go build ./cmd/adresu-plugin
 ```
 
 -----
@@ -73,4 +70,3 @@ All behavior is controlled via `config.toml`. See `config.toml.example` for a fu
 ## 📄 License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
-

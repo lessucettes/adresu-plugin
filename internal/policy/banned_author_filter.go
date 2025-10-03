@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lessucettes/adresu-plugin/config"
-	"github.com/lessucettes/adresu-plugin/store"
+	"github.com/lessucettes/adresu-plugin/internal/config"
+	"github.com/lessucettes/adresu-plugin/internal/store"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/lessucettes/adresu-kit/nip"

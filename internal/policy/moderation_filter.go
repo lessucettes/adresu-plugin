@@ -6,8 +6,8 @@ import (
 	"time"
 
 	kitpolicy "github.com/lessucettes/adresu-kit/policy"
-	"github.com/lessucettes/adresu-plugin/store"
-	"github.com/lessucettes/adresu-plugin/strfry"
+	"github.com/lessucettes/adresu-plugin/internal/store"
+	"github.com/lessucettes/adresu-plugin/internal/strfry"
 	"github.com/nbd-wtf/go-nostr"
 )
 
