@@ -7,9 +7,10 @@ import (
 	"sync"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/store"
+
+	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/nbd-wtf/go-nostr"
 )
 

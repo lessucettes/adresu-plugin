@@ -14,12 +14,12 @@ import (
 	"sync"
 	"syscall"
 
-	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/policy"
 	"github.com/lessucettes/adresu-plugin/internal/store"
 	"github.com/lessucettes/adresu-plugin/internal/strfry"
 
+	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
 )
 

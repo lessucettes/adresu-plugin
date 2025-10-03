@@ -6,8 +6,9 @@ import (
 	"runtime/debug"
 	"sync"
 
-	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/lessucettes/adresu-plugin/internal/config"
+
+	kitpolicy "github.com/lessucettes/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
 )
 
