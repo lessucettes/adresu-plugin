@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	kitpolicy "github.com/lessucettes/adresu-kit/policy"
+	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/store"

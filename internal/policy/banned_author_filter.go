@@ -6,8 +6,8 @@ import (
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
-	"github.com/lessucettes/adresu-kit/nip"
-	kitpolicy "github.com/lessucettes/adresu-kit/policy"
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
+	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/sync/singleflight"
 

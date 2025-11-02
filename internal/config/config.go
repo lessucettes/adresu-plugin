@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	kitconfig "github.com/lessucettes/adresu-kit/config"
+	kitconfig "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
 
 type Config struct {
