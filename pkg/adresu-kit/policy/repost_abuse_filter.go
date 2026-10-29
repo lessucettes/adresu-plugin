@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/nbd-wtf/go-nostr"
 
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
 
@@ -26,7 +26,7 @@ type UserActivityStats struct {
 
 type RepostAbuseFilter struct {
 	mu    sync.Mutex
-	stats *lru.LRU[string, *UserActivityStats]
+	stats *cache.LRU[string, *UserActivityStats]
 	cfg   *config.RepostAbuseFilterConfig
 }
 
@@ -34,7 +34,7 @@ var nip21Re = regexp.MustCompile(`\b(naddr1|nevent1|note1)[0-9a-z]+\b`)
 
 func NewRepostAbuseFilter(cfg *config.RepostAbuseFilterConfig) (*RepostAbuseFilter, error) {
 	size := cfg.CacheSize
-	cache := lru.NewLRU[string, *UserActivityStats](size, nil, cfg.CacheTTL)
+	statsCache := cache.NewLRU[string, *UserActivityStats](size, cfg.CacheTTL)
 
 	if cfg.MaxRatio < 0 {
 		cfg.MaxRatio = 0
@@ -43,7 +43,7 @@ func NewRepostAbuseFilter(cfg *config.RepostAbuseFilterConfig) (*RepostAbuseFilt
 	}
 
 	filter := &RepostAbuseFilter{
-		stats: cache,
+		stats: statsCache,
 		cfg:   cfg,
 	}
 
@@ -54,14 +54,19 @@ func (f *RepostAbuseFilter) Match(_ context.Context, event *nostr.Event, meta ma
 	newResult := NewResultFunc(repostAbuseFilterName)
 
 	if !f.cfg.Enabled {
-		return newResult(true, "filter_disabled", nil)
+		return newResult(true, "Filter is disabled.", nil)
 	}
 	if event.Kind != nostr.KindTextNote && event.Kind != nostr.KindRepost && event.Kind != nostr.KindGenericRepost {
-		return newResult(true, "kind_not_checked", nil)
+		return newResult(true, "Repost ratio check does not apply to this event kind.", nil)
 	}
 
+	isRepost, _ := f.isRepostNIP18(event)
+	pubkey := authorKey(event)
+
 	f.mu.Lock()
-	stats, ok := f.stats.Get(event.PubKey)
+	defer f.mu.Unlock()
+
+	stats, ok := f.stats.Get(pubkey)
 	if !ok || stats == nil {
 		stats = &UserActivityStats{}
 	} else if f.cfg.ResetDuration > 0 && !stats.LastEventTime.IsZero() {
@@ -69,59 +74,41 @@ func (f *RepostAbuseFilter) Match(_ context.Context, event *nostr.Event, meta ma
 			stats.OriginalPosts, stats.Reposts = 0, 0
 		}
 	}
-	statsCopy := *stats
-	f.mu.Unlock()
 
-	isRepost, _ := f.isRepostNIP18(event)
 	var rejectionReason string
-
 	if isRepost {
-		total := statsCopy.OriginalPosts + statsCopy.Reposts
+		total := stats.OriginalPosts + stats.Reposts
 		if total >= f.cfg.MinEvents {
-			predictedReposts := statsCopy.Reposts + 1
+			predictedReposts := stats.Reposts + 1
 			predictedTotal := total + 1
-			var currentRatio float64
-			if predictedTotal > 0 {
-				currentRatio = float64(predictedReposts) / float64(predictedTotal)
-			}
+			currentRatio := float64(predictedReposts) / float64(predictedTotal)
 			if currentRatio >= f.cfg.MaxRatio {
 				ratioPercent := currentRatio * 100
 				limitPercent := f.cfg.MaxRatio * 100
 				rejectionReason = fmt.Sprintf(
-					"repost_ratio_too_high:would_be_%.1f%%,limit_is_%.1f%%",
+					"Publishing this repost would make the repost share %.1f%%, reaching or exceeding the %.1f%% limit.",
 					ratioPercent, limitPercent,
 				)
 			}
 		}
 	}
 
-	f.mu.Lock()
-	fresh, ok := f.stats.Get(event.PubKey)
-	if !ok || fresh == nil {
-		fresh = &UserActivityStats{}
-	}
-	if f.cfg.ResetDuration > 0 && !fresh.LastEventTime.IsZero() {
-		if time.Since(fresh.LastEventTime) > f.cfg.ResetDuration {
-			fresh.OriginalPosts, fresh.Reposts = 0, 0
-		}
-	}
 	if rejectionReason == "" || f.cfg.CountRejectAsActivity {
-		fresh.LastEventTime = time.Now()
+		stats.LastEventTime = time.Now()
 	}
 	if rejectionReason == "" {
 		if isRepost {
-			fresh.Reposts++
+			stats.Reposts++
 		} else {
-			fresh.OriginalPosts++
+			stats.OriginalPosts++
 		}
 	}
-	f.stats.Add(event.PubKey, fresh)
-	f.mu.Unlock()
+	f.stats.Add(pubkey, stats)
 
 	if rejectionReason != "" {
 		return newResult(false, rejectionReason, nil)
 	}
-	return newResult(true, "repost_ratio_ok", nil)
+	return newResult(true, "Event passes the repost ratio check.", nil)
 }
 
 func (f *RepostAbuseFilter) isRepostNIP18(ev *nostr.Event) (bool, string) {

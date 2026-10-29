@@ -2,12 +2,14 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2/expirable"
+	lru "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/nbd-wtf/go-nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
@@ -23,25 +25,33 @@ type AutoBanFilter struct {
 
 	store store.Store
 	cfg   *config.AutoBanFilterConfig
+
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // RejectionStats stores the violation history for a pubkey.
 type RejectionStats struct {
 	StrikeCount     int
 	FirstStrikeTime time.Time
+	EventIDs        []string
 }
 
 // NewAutoBanFilter wires dependencies and cache TTLs from config.
 func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) (*AutoBanFilter, error) {
-	strikesCache := lru.NewLRU[string, *RejectionStats](cfg.StrikesCacheSize, nil, cfg.StrikeWindow)
-	cooldownCache := lru.NewLRU[string, struct{}](cfg.CooldownCacheSize, nil, cfg.CooldownDuration)
+	if cfg == nil {
+		return nil, errors.New("autoban config is nil")
+	}
 
-	return &AutoBanFilter{
-		store:           s,
-		strikes:         strikesCache,
-		banningCooldown: cooldownCache,
-		cfg:             cfg,
-	}, nil
+	filter := &AutoBanFilter{store: s, cfg: cfg}
+	if !cfg.Enabled {
+		// Disabled autoban never records strikes; do not allocate its caches.
+		return filter, nil
+	}
+
+	filter.strikes = lru.NewLRU[string, *RejectionStats](cfg.StrikesCacheSize, cfg.StrikeWindow)
+	filter.banningCooldown = lru.NewLRU[string, struct{}](cfg.CooldownCacheSize, cfg.CooldownDuration)
+	return filter, nil
 }
 
 // HandleRejection is called when an event has been rejected by another filter.
@@ -49,11 +59,31 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 	if !f.cfg.Enabled {
 		return
 	}
+	if f.cfg.MaxStrikes <= 0 {
+		// Invalid configuration must not turn every rejection into a ban.
+		slog.Error("Autoban is enabled with a non-positive max_strikes; skipping")
+		return
+	}
 	if len(f.cfg.ExcludeFilters) > 0 && slices.Contains(f.cfg.ExcludeFilters, filterName) {
 		return
 	}
+	if event == nil {
+		return
+	}
+	// strfry validates the decoded hash, not its hex letter casing. Keep the
+	// signed event untouched and use its canonical hash for replay accounting.
+	eventID := event.GetID()
+	if !strings.EqualFold(event.ID, eventID) {
+		return
+	}
+	// Never punish an identity supplied by an event its author did not sign.
+	// This also prevents a forged moderator reaction from banning the moderator.
+	valid, err := event.CheckSignature()
+	if err != nil || !valid {
+		return
+	}
 
-	pubkey := event.PubKey
+	pubkey := strings.ToLower(event.PubKey)
 
 	var (
 		shouldBan        bool
@@ -62,17 +92,28 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 
 	f.mu.Lock()
 
+	if f.closed {
+		f.mu.Unlock()
+		return
+	}
 	if _, onCooldown := f.banningCooldown.Get(pubkey); onCooldown {
 		f.mu.Unlock()
 		return
 	}
 
+	now := time.Now()
 	stats, ok := f.strikes.Get(pubkey)
-	if !ok {
-		stats = &RejectionStats{StrikeCount: 1, FirstStrikeTime: time.Now()}
-	} else {
-		stats.StrikeCount++
+	if !ok || now.Sub(stats.FirstStrikeTime) >= f.cfg.StrikeWindow {
+		stats = &RejectionStats{FirstStrikeTime: now}
 	}
+	// Anyone can relay a signed Nostr event. Replaying one rejected event
+	// must not create additional strikes against its original author.
+	if slices.Contains(stats.EventIDs, eventID) {
+		f.mu.Unlock()
+		return
+	}
+	stats.EventIDs = append(stats.EventIDs, eventID)
+	stats.StrikeCount++
 	f.strikes.Add(pubkey, stats)
 
 	if stats.StrikeCount >= f.cfg.MaxStrikes {
@@ -80,6 +121,7 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 		finalStrikeCount = stats.StrikeCount
 		f.strikes.Remove(pubkey)
 		f.banningCooldown.Add(pubkey, struct{}{})
+		f.wg.Add(1)
 	}
 
 	f.mu.Unlock()
@@ -91,8 +133,21 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 			"ban_duration", f.cfg.BanDuration,
 			"by_filter", filterName,
 		)
-		go f.banUser(ctx, pubkey)
+		go func() {
+			defer f.wg.Done()
+			f.banUser(ctx, pubkey)
+		}()
 	}
+}
+
+// Close waits for in-flight ban operations. It must not be called concurrently
+// with HandleRejection.
+func (f *AutoBanFilter) Close() error {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+	f.wg.Wait()
+	return nil
 }
 
 // banUser performs the ban operation in a separate goroutine.
@@ -102,7 +157,9 @@ func (f *AutoBanFilter) banUser(parentCtx context.Context, pubkey string) {
 		timeout = 5 * time.Second
 	}
 
-	banCtx, cancel := context.WithTimeout(parentCtx, timeout)
+	// Finish an admitted ban even if its triggering request is canceled;
+	// the timeout bounds its lifetime and Close joins it before storage closes.
+	banCtx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), timeout)
 	defer cancel()
 
 	if err := f.store.BanAuthor(banCtx, pubkey, f.cfg.BanDuration); err != nil {

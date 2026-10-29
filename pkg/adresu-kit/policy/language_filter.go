@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/pemistahl/lingua-go"
 
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
 
@@ -38,7 +38,7 @@ type LanguageFilter struct {
 	detector          lingua.LanguageDetector
 	allowedLangs      map[lingua.Language]struct{}
 	allowedKinds      map[int]struct{}
-	approvedCache     *lru.LRU[string, struct{}]
+	approvedCache     *cache.LRU[string, struct{}]
 	thresholds        map[lingua.Language]map[lingua.Language]float64
 	defaultThresholds map[lingua.Language]float64
 }
@@ -60,6 +60,9 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 		} else {
 			slog.Warn("LanguageFilter config warning: unsupported language name or ISO code in config; ignored", "value", langStr)
 		}
+	}
+	if len(allowedMap) == 0 {
+		return nil, errors.New("language filter enabled but no allowed language is supported")
 	}
 
 	allowedKinds := make(map[int]struct{}, len(cfg.KindsToCheck))
@@ -88,9 +91,9 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 		}
 	}
 
-	var cache *lru.LRU[string, struct{}]
+	var cacheStore *cache.LRU[string, struct{}]
 	if cfg.ApprovedCacheTTL > 0 && cfg.ApprovedCacheSize > 0 {
-		cache = lru.NewLRU[string, struct{}](cfg.ApprovedCacheSize, nil, cfg.ApprovedCacheTTL)
+		cacheStore = cache.NewLRU[string, struct{}](cfg.ApprovedCacheSize, cfg.ApprovedCacheTTL)
 	}
 
 	filter := &LanguageFilter{
@@ -98,7 +101,7 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 		detector:          detector,
 		allowedLangs:      allowedMap,
 		allowedKinds:      allowedKinds,
-		approvedCache:     cache,
+		approvedCache:     cacheStore,
 		thresholds:        thresholds,
 		defaultThresholds: defaultThresholds,
 	}
@@ -110,39 +113,39 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 	newResult := NewResultFunc(languageFilterName)
 
 	if !f.cfg.Enabled || len(f.allowedLangs) == 0 {
-		return newResult(true, "filter_disabled", nil)
+		return newResult(true, "Filter is disabled.", nil)
 	}
 	if _, ok := f.allowedKinds[event.Kind]; !ok {
-		return newResult(true, "kind_not_checked", nil)
+		return newResult(true, "Language check does not apply to this event kind.", nil)
 	}
 	if f.cfg.MinLengthForCheck > 0 && len(event.Content) < f.cfg.MinLengthForCheck {
-		return newResult(true, "content_too_short", nil)
+		return newResult(true, "Content is too short for language detection; check was skipped.", nil)
 	}
 	if f.approvedCache != nil {
-		if _, ok := f.approvedCache.Get(event.PubKey); ok {
-			return newResult(true, "pubkey_in_cache", nil)
+		if _, ok := f.approvedCache.Get(authorKey(event)); ok {
+			return newResult(true, "Author has a cached language approval; check was skipped.", nil)
 		}
 	}
 
 	cleanedContent := contentCleanerRegex.ReplaceAllString(event.Content, "")
 	if len(cleanedContent) < f.cfg.MinLengthForCheck {
-		return newResult(true, "cleaned_content_too_short", nil)
+		return newResult(true, "Content is too short for language detection after cleaning; check was skipped.", nil)
 	}
 
 	detectedLang, detected := f.detector.DetectLanguageOf(cleanedContent)
 	if !detected {
-		return newResult(false, "language_undetectable", nil)
+		return newResult(false, "Content language could not be detected.", nil)
 	}
 
 	langCode := detectedLang.IsoCode639_1().String()
 	if _, isAllowed := f.allowedLangs[detectedLang]; isAllowed {
 		if f.approvedCache != nil {
-			f.approvedCache.Add(event.PubKey, struct{}{})
+			f.approvedCache.Add(authorKey(event), struct{}{})
 		}
 		if meta != nil {
 			meta["language"] = langCode
 		}
-		return newResult(true, fmt.Sprintf("language_allowed:'%s'", langCode), nil)
+		return newResult(true, fmt.Sprintf("Detected language %q is allowed on this relay.", langCode), nil)
 	}
 
 	for primaryLang, similarLangsMap := range f.thresholds {
@@ -153,18 +156,18 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 		if hasRule {
 			if confidence := f.detector.ComputeLanguageConfidence(cleanedContent, primaryLang); confidence > threshold {
 				if f.approvedCache != nil {
-					f.approvedCache.Add(event.PubKey, struct{}{})
+					f.approvedCache.Add(authorKey(event), struct{}{})
 				}
 				if meta != nil {
 					meta["language"] = langCode
 				}
 				primaryLangCode := primaryLang.IsoCode639_1().String()
-				return newResult(true, fmt.Sprintf("language_allowed_by_threshold:'%s'_as_'%s'", langCode, primaryLangCode), nil)
+				return newResult(true, fmt.Sprintf("Detected language %q is accepted because confidence for allowed language %q exceeds its threshold.", langCode, primaryLangCode), nil)
 			}
 		}
 	}
 
-	return newResult(false, fmt.Sprintf("language_not_allowed:'%s'", langCode), nil)
+	return newResult(false, fmt.Sprintf("Detected language %q is not allowed on this relay.", langCode), nil)
 }
 
 func GetGlobalDetector() lingua.LanguageDetector {

@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/time/rate"
 
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
 
@@ -23,8 +24,10 @@ type processedRateRule struct {
 }
 
 type RateLimiterFilter struct {
+	mu         sync.Mutex
 	cfg        *config.RateLimiterConfig
-	limiters   *lru.LRU[string, *rate.Limiter]
+	by         config.RateLimiterBy
+	limiters   *cache.LRU[string, *rate.Limiter]
 	kindToRule map[int]processedRateRule
 }
 
@@ -39,7 +42,13 @@ func NewRateLimiterFilter(cfg *config.RateLimiterConfig) (*RateLimiterFilter, er
 		ttl = time.Minute * 10
 	}
 
-	cache := lru.NewLRU[string, *rate.Limiter](size, nil, ttl)
+	// An omitted "by" must not disable limiting for an enabled filter.
+	by := cfg.By
+	if by == "" {
+		by = config.RateByBoth
+	}
+
+	limiters := cache.NewLRU[string, *rate.Limiter](size, ttl)
 	kindMap := make(map[int]processedRateRule, len(cfg.Rules))
 
 	for i := range cfg.Rules {
@@ -55,7 +64,8 @@ func NewRateLimiterFilter(cfg *config.RateLimiterConfig) (*RateLimiterFilter, er
 
 	filter := &RateLimiterFilter{
 		cfg:        cfg,
-		limiters:   cache,
+		by:         by,
+		limiters:   limiters,
 		kindToRule: kindMap,
 	}
 
@@ -66,8 +76,10 @@ func (f *RateLimiterFilter) Match(_ context.Context, event *nostr.Event, meta ma
 	newResult := NewResultFunc(rateLimiterFilterName)
 
 	if !f.cfg.Enabled {
-		return newResult(true, "filter_disabled", nil)
+		return newResult(true, "Filter is disabled.", nil)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
 	var currentRate float64
 	var currentBurst int
@@ -87,27 +99,28 @@ func (f *RateLimiterFilter) Match(_ context.Context, event *nostr.Event, meta ma
 	}
 
 	if currentRate <= 0 {
-		return newResult(true, "rate_unlimited_for_kind", nil)
+		return newResult(true, "Publishing rate is unlimited for this event kind.", nil)
 	}
 
 	userKeys := make([]string, 0, 2)
 	remoteIP, _ := meta["remote_ip"].(string)
+	pubkey := authorKey(event)
 
-	switch f.cfg.By {
+	switch f.by {
 	case config.RateByIP:
 		if remoteIP != "" {
 			userKeys = append(userKeys, "ip:"+remoteIP)
 		}
 	case config.RateByPubKey:
-		if event.PubKey != "" {
-			userKeys = append(userKeys, "pk:"+event.PubKey)
+		if pubkey != "" {
+			userKeys = append(userKeys, "pk:"+pubkey)
 		}
 	case config.RateByBoth:
 		if remoteIP != "" {
 			userKeys = append(userKeys, "ip:"+remoteIP)
 		}
-		if event.PubKey != "" {
-			userKeys = append(userKeys, "pk:"+event.PubKey)
+		if pubkey != "" {
+			userKeys = append(userKeys, "pk:"+pubkey)
 		}
 	}
 
@@ -115,15 +128,16 @@ func (f *RateLimiterFilter) Match(_ context.Context, event *nostr.Event, meta ma
 		cacheKey := fmt.Sprintf("%s:%s", ruleID, userKey)
 		limiter := f.getLimiter(cacheKey, currentRate, currentBurst)
 		if !limiter.Allow() {
-			reason := fmt.Sprintf("rate_limit_exceeded:rule:'%s'", ruleDescription)
+			reason := fmt.Sprintf("Publishing rate limit exceeded for rule %q.", ruleDescription)
 			return newResult(false, reason, nil)
 		}
 	}
-	return newResult(true, "rate_limit_ok", nil)
+	return newResult(true, "Publishing rate is within the allowed limit.", nil)
 }
 
 func (f *RateLimiterFilter) getLimiter(key string, r float64, b int) *rate.Limiter {
 	if limiter, ok := f.limiters.Get(key); ok {
+		f.limiters.Add(key, limiter)
 		return limiter
 	}
 	limiter := rate.NewLimiter(rate.Limit(r), b)

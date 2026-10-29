@@ -50,7 +50,10 @@ func NewFreshnessFilter(cfg *config.FreshnessFilterConfig) (*FreshnessFilter, er
 func (f *FreshnessFilter) Match(_ context.Context, event *nostr.Event, meta map[string]any) (FilterResult, error) {
 	newResult := NewResultFunc(freshnessFilterName)
 
-	maxPast, maxFuture := f.cfg.DefaultMaxPast, f.cfg.DefaultMaxFuture
+	var maxPast, maxFuture time.Duration
+	if f.cfg != nil {
+		maxPast, maxFuture = f.cfg.DefaultMaxPast, f.cfg.DefaultMaxFuture
+	}
 
 	if limits, ok := f.rulesByKind[event.Kind]; ok {
 		maxPast = limits.MaxPast
@@ -62,15 +65,15 @@ func (f *FreshnessFilter) Match(_ context.Context, event *nostr.Event, meta map[
 
 	age := now.Sub(createdAt)
 	if maxPast > 0 && age > maxPast {
-		reason := fmt.Sprintf("event_too_old:age_%s,max_%s", age.Round(time.Second), maxPast)
+		reason := fmt.Sprintf("Event is too old (age: %s; maximum allowed: %s).", age.Round(time.Second), maxPast)
 		return newResult(false, reason, nil)
 	}
 
 	futureOffset := createdAt.Sub(now)
 	if maxFuture > 0 && futureOffset > maxFuture {
-		reason := fmt.Sprintf("event_in_future:offset_%s,max_%s", futureOffset.Round(time.Second), maxFuture)
+		reason := fmt.Sprintf("Event timestamp is too far in the future (offset: %s; maximum allowed: %s).", futureOffset.Round(time.Second), maxFuture)
 		return newResult(false, reason, nil)
 	}
 
-	return newResult(true, "timestamp_ok", nil)
+	return newResult(true, "Event timestamp is within the allowed range.", nil)
 }

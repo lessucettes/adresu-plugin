@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
 	"github.com/nbd-wtf/go-nostr"
@@ -24,6 +26,8 @@ import (
 )
 
 var version = "dev"
+
+const maxPolicyResponseSize = 8 << 10 // strfry's plugin output record limit.
 
 type PolicyInput struct {
 	Type       string      `json:"type,omitempty"`
@@ -42,6 +46,13 @@ func buildPipeline(cfg *config.Config, db store.Store) (*policy.Pipeline, error)
 	strfryClient := strfry.NewClient(cfg.Strfry.ExecutablePath, cfg.Strfry.ConfigPath)
 
 	var stages []policy.PipelineStage
+	var rejectionHandlers []policy.RejectionHandler
+	built := false
+	defer func() {
+		if !built {
+			_ = policy.NewPipeline(cfg, stages, rejectionHandlers, nil).Close()
+		}
+	}()
 
 	type kitFilterFactory struct {
 		name        string
@@ -93,10 +104,11 @@ func buildPipeline(cfg *config.Config, db store.Store) (*policy.Pipeline, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AutoBanFilter: %w", err)
 	}
-	rejectionHandlers := []policy.RejectionHandler{autoBanFilter}
+	rejectionHandlers = []policy.RejectionHandler{autoBanFilter}
 
 	var metricsCollector policy.MetricsCollector = nil
 	pipeline := policy.NewPipeline(cfg, stages, rejectionHandlers, metricsCollector)
+	built = true
 
 	return pipeline, nil
 }
@@ -128,6 +140,8 @@ func main() {
 }
 
 func runApp(configPath string, useDefaults bool, dryRun bool) error {
+	// Configuration warnings precede discovery of the configured log level.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	cfg, defaultsUsed, err := config.Load(configPath, useDefaults)
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
@@ -154,16 +168,9 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 	currentPipeline = p
 	pipelineMutex.Unlock()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	shutdownChan := make(chan os.Signal, 1)
-	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-shutdownChan
-		slog.Info("Received shutdown signal, shutting down gracefully...")
-		cancel()
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var retired sync.WaitGroup
 
 	onReload := func(newCfg *config.Config) {
 		slog.Info("Reloading pipeline with new configuration...")
@@ -179,33 +186,84 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 		pipelineMutex.Unlock()
 
 		if oldPipeline != nil {
-			go oldPipeline.Close() // Gracefully shutdown the old pipeline.
+			retired.Add(1)
+			go func() {
+				defer retired.Done()
+				_ = oldPipeline.Close()
+			}()
 		}
 
 		slog.Info("Pipeline reloaded successfully.", "path", configPath)
 	}
-	go config.StartWatcher(ctx, configPath, onReload, 0)
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		config.StartWatcher(ctx, configPath, onReload, 0)
+	}()
+	defer func() {
+		stop()
+		<-watcherDone
+		pipelineMutex.Lock()
+		p := currentPipeline
+		currentPipeline = nil
+		pipelineMutex.Unlock()
+		if p != nil {
+			_ = p.Close()
+		}
+		retired.Wait()
+	}()
 
-	return processEvents(ctx, os.Stdin, os.Stdout, dryRun)
+	input, err := prepareStdin()
+	if err != nil {
+		return err
+	}
+	err = processEvents(ctx, input, os.Stdout, dryRun)
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		return nil
+	}
+	return err
 }
 
 func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) error {
+	ctx, cancel := context.WithCancel(ctx)
 	linesChan := make(chan []byte)
 	errChan := make(chan error, 1)
+	readerDone := make(chan struct{})
 	encoder := json.NewEncoder(w)
+	defer func() {
+		cancel()
+		// Own closable input so shutdown also interrupts a blocked read.
+		if closer, ok := r.(io.Closer); ok {
+			_ = closer.Close()
+			select {
+			case <-readerDone:
+			case <-time.After(200 * time.Millisecond):
+				slog.Warn("Input reader did not stop after close")
+			}
+		}
+	}()
 
 	go func() {
-		defer close(errChan) // This ensures the error channel is always closed.
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			lineCopy := make([]byte, len(scanner.Bytes()))
-			copy(lineCopy, scanner.Bytes())
-			linesChan <- lineCopy
+		defer close(readerDone)
+		defer close(linesChan)
+		defer close(errChan)
+		reader := bufio.NewReader(r)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				select {
+				case linesChan <- line:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					errChan <- err
+				}
+				return
+			}
 		}
-		if err := scanner.Err(); err != nil {
-			errChan <- err
-		}
-		close(linesChan)
 	}()
 
 	slog.Info("Ready to process events from stdin...")
@@ -223,12 +281,36 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 				return nil
 			}
 
-			if len(line) == 0 {
+			if len(bytes.TrimSpace(line)) == 0 {
 				continue
 			}
 			var input PolicyInput
 			if err := json.Unmarshal(line, &input); err != nil {
-				slog.Warn("Failed to decode policy input JSON", "error", err, "raw_line_prefix", string(line))
+				decodeError := err.Error()
+				if len(decodeError) > 1024 {
+					decodeError = decodeError[:1024]
+				}
+				slog.Warn("Failed to decode policy input JSON", "error", decodeError,
+					"raw_line_prefix", string(line[:min(len(line), 1024)]))
+				// strfry accepts some event shapes that go-nostr cannot decode
+				// (for example, non-string tag extensions). Reply using the ID
+				// decoded independently, or strfry waits until its plugin timeout.
+				var envelope struct {
+					Event struct {
+						ID *string `json:"id"`
+					} `json:"event"`
+				}
+				if json.Unmarshal(line, &envelope) == nil && envelope.Event.ID != nil {
+					response := policy.PolicyResponse{ID: *envelope.Event.ID, Action: "reject", Msg: "invalid: Event could not be decoded."}
+					if err := encoder.Encode(response); err != nil {
+						if errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EPIPE) {
+							return nil
+						}
+						return fmt.Errorf("failed to write policy response: %w", err)
+					}
+				}
+				// A malformed request must not stop the plugin. Without a
+				// string ID there is no correlated response we can send.
 				continue
 			}
 
@@ -241,26 +323,36 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 
 			pipelineMutex.RLock()
 			p := currentPipeline
-			pipelineMutex.RUnlock()
 
 			result, err := p.ProcessEvent(ctx, &input.Event, remoteIP, dryRun)
+			pipelineMutex.RUnlock()
 			if err != nil {
 				slog.Error("Error processing event", "event_id", input.Event.ID, "error", err)
-				continue
 			}
 
+			// Long configured patterns can produce reasons beyond strfry's
+			// record limit. Account for JSON escaping, retaining ordinary reasons.
+			if len(result.Msg) > maxPolicyResponseSize/8 {
+				raw, err := json.Marshal(result)
+				if err != nil {
+					return fmt.Errorf("failed to encode policy response: %w", err)
+				}
+				if len(raw)+1 > maxPolicyResponseSize {
+					result.Msg = "Event rejected by relay policy; see relay logs for the detailed reason."
+				}
+			}
 			if err := encoder.Encode(result); err != nil {
 				if errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EPIPE) {
 					return nil
 				}
-				slog.Error("Failed to write response to stdout", "error", err)
+				return fmt.Errorf("failed to write policy response: %w", err)
 			}
 		}
 	}
 }
 
 func validateConfiguration(configPath string) error {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	fmt.Printf("Validating configuration file: %s\n", configPath)
 	cfg, _, err := config.Load(configPath, false)
 	if err != nil {
@@ -273,8 +365,9 @@ func validateConfiguration(configPath string) error {
 	}
 	defer db.Close()
 
-	if _, err := buildPipeline(cfg, db); err != nil {
+	p, err := buildPipeline(cfg, db)
+	if err != nil {
 		return err
 	}
-	return nil
+	return p.Close()
 }

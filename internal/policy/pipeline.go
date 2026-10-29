@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"runtime/debug"
 	"sync"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 )
+
+// errPipelineClosed is returned for events that arrive after Close started.
+var errPipelineClosed = errors.New("policy pipeline is closed")
 
 type MetricsCollector interface {
 	Report(res kitpolicy.FilterResult)
@@ -25,7 +29,12 @@ type Pipeline struct {
 	rejectionHandlers []RejectionHandler
 	rejectionLevels   map[string]config.LogLevel
 	collector         MetricsCollector
-	wg                sync.WaitGroup
+
+	// mu keeps Close from closing filters under a running ProcessEvent and
+	// stops WaitGroup misuse when events arrive during shutdown.
+	mu        sync.RWMutex
+	closed    bool
+	closeDone chan struct{}
 }
 
 func NewPipeline(
@@ -39,6 +48,7 @@ func NewPipeline(
 		rejectionHandlers: handlers,
 		rejectionLevels:   cfg.Log.RejectionLevels,
 		collector:         collector,
+		closeDone:         make(chan struct{}),
 	}
 }
 
@@ -48,28 +58,36 @@ func (p *Pipeline) ProcessEvent(
 	remoteIP string,
 	dryRun bool,
 ) (response PolicyResponse, err error) {
-	p.wg.Add(1)
-	defer p.wg.Done()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if event == nil {
+		return PolicyResponse{Action: "reject", Msg: "Event is missing."}, nil
+	}
+	if p.closed {
+		return PolicyResponse{ID: event.ID, Action: "reject", Msg: "The policy pipeline is shutting down."}, errPipelineClosed
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Panic recovered in filter pipeline",
 				"panic", r, "event_id", event.ID, "pubkey", event.PubKey, "stack", string(debug.Stack()),
 			)
-			response = PolicyResponse{ID: event.ID, Action: "reject", Msg: "internal: an unexpected error occurred"}
+			response = PolicyResponse{ID: event.ID, Action: "reject", Msg: "An unexpected internal error occurred."}
 			err = nil
 		}
 	}()
 
 	meta := map[string]any{
 		"remote_ip": remoteIP,
+		"dry_run":   dryRun,
 	}
 
 	for _, stage := range p.stages {
 		res, filterErr := stage.Filter.Match(ctx, event, meta)
 		if filterErr != nil {
 			slog.Error("Filter execution failed", "error", filterErr, "filter_name", res.Filter, "event_id", event.ID)
-			return PolicyResponse{ID: event.ID, Action: "reject", Msg: "internal: error in filter " + res.Filter}, filterErr
+			return PolicyResponse{ID: event.ID, Action: "reject", Msg: "An internal error occurred while running filter " + res.Filter + "."}, filterErr
 		}
 
 		if p.collector != nil {
@@ -109,7 +127,21 @@ func (p *Pipeline) ProcessEvent(
 }
 
 func (p *Pipeline) Close() error {
-	p.wg.Wait()
+	p.mu.Lock()
+	if p.closed {
+		done := p.closeDone
+		p.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return nil
+	}
+	p.closed = true
+	if p.closeDone == nil {
+		p.closeDone = make(chan struct{})
+	}
+	done := p.closeDone
+	p.mu.Unlock()
 
 	for _, stage := range p.stages {
 		if closer, ok := stage.Filter.(interface{ Close() error }); ok {
@@ -118,5 +150,14 @@ func (p *Pipeline) Close() error {
 			}
 		}
 	}
+	for _, handler := range p.rejectionHandlers {
+		if closer, ok := handler.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				slog.Error("Failed to close a rejection handler", "handler", handler, "error", err)
+			}
+		}
+	}
+
+	close(done)
 	return nil
 }

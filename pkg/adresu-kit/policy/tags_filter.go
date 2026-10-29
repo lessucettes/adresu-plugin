@@ -55,12 +55,12 @@ func (f *TagsFilter) Match(_ context.Context, event *nostr.Event, meta map[strin
 
 	processedRule, exists := f.kindToRule[event.Kind]
 	if !exists {
-		return newResult(true, "no_rules_for_kind", nil)
+		return newResult(true, "No rules apply to this event kind.", nil)
 	}
 	rule := processedRule.source
 
 	if rule.MaxTags != nil && len(event.Tags) > *rule.MaxTags {
-		reason := fmt.Sprintf("too_many_tags:got_%d,max_%d", len(event.Tags), *rule.MaxTags)
+		reason := fmt.Sprintf("Event has too many tags (%d; maximum allowed: %d).", len(event.Tags), *rule.MaxTags)
 		return newResult(false, reason, nil)
 	}
 
@@ -84,7 +84,7 @@ func (f *TagsFilter) Match(_ context.Context, event *nostr.Event, meta map[strin
 
 		for reqTag := range processedRule.requiredTags {
 			if !requiredFound[reqTag] {
-				reason := fmt.Sprintf("missing_required_tag:'%s'", reqTag)
+				reason := fmt.Sprintf("Required tag %q is missing.", reqTag)
 				return newResult(false, reason, nil)
 			}
 		}
@@ -92,11 +92,11 @@ func (f *TagsFilter) Match(_ context.Context, event *nostr.Event, meta map[strin
 		for tagName, limit := range processedRule.maxTagCounts {
 			count := specificTagCounts[tagName]
 			if count > limit {
-				reason := fmt.Sprintf("too_many_tags:'%s',got_%d,max_%d", tagName, count, limit)
+				reason := fmt.Sprintf("Event has too many tags named %q (%d; maximum allowed: %d).", tagName, count, limit)
 				return newResult(false, reason, nil)
 			}
 		}
 	}
 
-	return newResult(true, "tags_ok", nil)
+	return newResult(true, "Event tags satisfy the configured rules.", nil)
 }

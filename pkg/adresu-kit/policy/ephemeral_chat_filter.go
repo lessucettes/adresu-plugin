@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sync"
 	"time"
 	"unicode"
 
-	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/time/rate"
 
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
 )
@@ -21,11 +22,12 @@ const (
 )
 
 type EphemeralChatFilter struct {
+	mu         sync.Mutex
 	cfg        *config.EphemeralChatFilterConfig
 	zalgoRegex *regexp.Regexp
 	wordRegex  *regexp.Regexp
-	lastSeen   *lru.LRU[string, time.Time]
-	limiters   *lru.LRU[string, *rate.Limiter]
+	lastSeen   *cache.LRU[string, time.Time]
+	limiters   *cache.LRU[string, *rate.Limiter]
 }
 
 func NewEphemeralChatFilter(cfg *config.EphemeralChatFilterConfig) (*EphemeralChatFilter, error) {
@@ -50,8 +52,8 @@ func NewEphemeralChatFilter(cfg *config.EphemeralChatFilterConfig) (*EphemeralCh
 	if size <= 0 {
 		size = 10000
 	}
-	lastSeen := lru.NewLRU[string, time.Time](size, nil, 5*time.Minute)
-	limiters := lru.NewLRU[string, *rate.Limiter](size, nil, 15*time.Minute)
+	lastSeen := cache.NewLRU[string, time.Time](size, max(5*time.Minute, cfg.MinDelay))
+	limiters := cache.NewLRU[string, *rate.Limiter](size, 15*time.Minute)
 
 	filter := &EphemeralChatFilter{
 		cfg:        cfg,
@@ -68,18 +70,22 @@ func (f *EphemeralChatFilter) Match(_ context.Context, event *nostr.Event, meta 
 	newResult := NewResultFunc(ephemeralChatFilterName)
 
 	if !f.cfg.Enabled || !slices.Contains(f.cfg.Kinds, event.Kind) {
-		return newResult(true, "filter_disabled_or_kind_not_matched", nil)
+		return newResult(true, "Filter is disabled or does not apply to this event kind.", nil)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	pubkey := authorKey(event)
 
 	if f.lastSeen != nil && f.cfg.MinDelay > 0 {
 		now := time.Now()
-		if last, ok := f.lastSeen.Get(event.PubKey); ok {
+		if last, ok := f.lastSeen.Get(pubkey); ok {
 			if delay := now.Sub(last); delay < f.cfg.MinDelay {
-				reason := fmt.Sprintf("posting_too_frequently:delay_%.1fs,limit_%.1fs", delay.Seconds(), f.cfg.MinDelay.Seconds())
+				reason := fmt.Sprintf("Messages are being posted too frequently (interval: %.1f seconds; minimum required: %.1f seconds).", delay.Seconds(), f.cfg.MinDelay.Seconds())
 				return newResult(false, reason, nil)
 			}
 		}
-		f.lastSeen.Add(event.PubKey, now)
+		f.lastSeen.Add(pubkey, now)
 	}
 
 	content := event.Content
@@ -98,9 +104,9 @@ func (f *EphemeralChatFilter) Match(_ context.Context, event *nostr.Event, meta 
 		if minLetters <= 0 {
 			minLetters = 20
 		}
-		if letters > minLetters {
+		if letters >= minLetters {
 			if ratio := float64(caps) / float64(letters); ratio > f.cfg.MaxCapsRatio {
-				reason := fmt.Sprintf("excessive_caps:ratio_%.2f,limit_%.2f", ratio, f.cfg.MaxCapsRatio)
+				reason := fmt.Sprintf("Too many uppercase letters (ratio: %.2f; maximum allowed: %.2f).", ratio, f.cfg.MaxCapsRatio)
 				return newResult(false, reason, nil)
 			}
 		}
@@ -116,8 +122,8 @@ func (f *EphemeralChatFilter) Match(_ context.Context, event *nostr.Event, meta 
 				} else {
 					count = 1
 				}
-				if count >= f.cfg.MaxRepeatChars {
-					reason := fmt.Sprintf("excessive_char_repetition:count_%d,limit_%d", count, f.cfg.MaxRepeatChars)
+				if count > 1 && count >= f.cfg.MaxRepeatChars {
+					reason := fmt.Sprintf("A character is repeated too many times in a row (count: %d; rejection threshold: %d).", count, f.cfg.MaxRepeatChars)
 					return newResult(false, reason, nil)
 				}
 			}
@@ -125,23 +131,23 @@ func (f *EphemeralChatFilter) Match(_ context.Context, event *nostr.Event, meta 
 	}
 
 	if f.wordRegex != nil && f.wordRegex.MatchString(content) {
-		return newResult(false, fmt.Sprintf("word_too_long:limit_%d", f.cfg.MaxWordLength), nil)
+		return newResult(false, fmt.Sprintf("A word contains at least %d consecutive non-whitespace characters.", f.cfg.MaxWordLength), nil)
 	}
 
 	if f.zalgoRegex != nil && f.zalgoRegex.MatchString(content) {
-		return newResult(false, "zalgo_text_detected", nil)
+		return newResult(false, "Text contains disallowed combining marks (Zalgo text).", nil)
 	}
 
-	limiter := f.getLimiter(event.PubKey)
+	limiter := f.getLimiter(pubkey)
 	if limiter.Allow() {
-		return newResult(true, "rate_limit_ok", nil)
+		return newResult(true, "Publishing rate is within the allowed limit.", nil)
 	}
 
 	if nip.IsPoWValid(event, f.cfg.RequiredPoWOnLimit) {
-		return newResult(true, "rate_limit_bypassed_by_pow", nil)
+		return newResult(true, "Proof of work satisfies the requirement for bypassing the publishing rate limit.", nil)
 	}
 
-	reason := fmt.Sprintf("rate_limit_exceeded:required_pow_%d", f.cfg.RequiredPoWOnLimit)
+	reason := fmt.Sprintf("Publishing rate limit exceeded; proof of work with at least %d leading zero bits is required to bypass it.", f.cfg.RequiredPoWOnLimit)
 	return newResult(false, reason, nil)
 }
 

@@ -10,7 +10,6 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/nbd-wtf/go-nostr v0.52.0
 	github.com/pemistahl/lingua-go v1.4.0
-	golang.org/x/sync v0.12.0
 	golang.org/x/time v0.13.0
 )
 

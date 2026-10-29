@@ -43,14 +43,14 @@ func (f *KindFilter) Match(_ context.Context, event *nostr.Event, meta map[strin
 	newResult := NewResultFunc(kindFilterName)
 
 	if _, isDenied := f.denied[event.Kind]; isDenied {
-		return newResult(false, fmt.Sprintf("kind_%d_denied", event.Kind), nil)
+		return newResult(false, fmt.Sprintf("Event kind %d is denied by relay policy.", event.Kind), nil)
 	}
 
 	if f.allowed != nil {
 		if _, isAllowed := f.allowed[event.Kind]; !isAllowed {
-			return newResult(false, fmt.Sprintf("kind_%d_not_allowed", event.Kind), nil)
+			return newResult(false, fmt.Sprintf("Event kind %d is not in the relay's list of allowed kinds.", event.Kind), nil)
 		}
 	}
 
-	return newResult(true, "kind_allowed", nil)
+	return newResult(true, "Event kind is allowed by relay policy.", nil)
 }

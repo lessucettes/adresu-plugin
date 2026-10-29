@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	kitconfig "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
+	"github.com/nbd-wtf/go-nostr"
 )
 
 type Config struct {
@@ -108,6 +110,31 @@ type AutoBanFilterConfig struct {
 	ExcludeFilters    []string      `toml:"exclude_filters_from_strikes"`
 }
 
+func isFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+// isHexPubKey reports whether s encodes a valid Schnorr public key in hex.
+// Moderation lowercases the configured key before comparing it with event
+// pubkeys, so uppercase hex is accepted here as well.
+func isHexPubKey(s string) bool {
+	return nostr.IsValidPublicKey(strings.ToLower(s))
+}
+
+// undecodedKeyNames returns the dotted names of TOML keys that did not map to
+// any configuration field, in file order.
+func undecodedKeyNames(md toml.MetaData) []string {
+	keys := md.Undecoded()
+	if len(keys) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		names = append(names, key.String())
+	}
+	return names
+}
+
 func findCommonElements(slice1, slice2 []int) []int {
 	set := make(map[int]struct{})
 	var common []int
@@ -138,6 +165,13 @@ func defaultConfig() *Config {
 			UnbanEmoji:  "🔓",
 			BanDuration: 30 * 24 * time.Hour,
 		},
+		Filters: FiltersConfig{
+			RateLimiter: kitconfig.RateLimiterConfig{
+				// Without an explicit "by", the rate limiter would otherwise
+				// accept every event when enabled.
+				By: kitconfig.RateByBoth,
+			},
+		},
 	}
 }
 
@@ -149,11 +183,17 @@ func (c *Config) validate() error {
 	if (c.Policy.BanEmoji != "" || c.Policy.UnbanEmoji != "") && c.Policy.ModeratorPubKey == "" {
 		return errors.New("policy.moderator_pubkey must be set")
 	}
+	// A malformed key can never match a signed event's pubkey, so moderation
+	// would silently stop working. Only enforce this while moderation is
+	// active; an unused key is left untouched.
+	if (c.Policy.BanEmoji != "" || c.Policy.UnbanEmoji != "") && !isHexPubKey(c.Policy.ModeratorPubKey) {
+		return errors.New("policy.moderator_pubkey must be a 64-character hex public key")
+	}
 	if (c.Policy.BanEmoji != "" || c.Policy.UnbanEmoji != "") && c.Policy.BanEmoji == c.Policy.UnbanEmoji {
 		return errors.New("policy.ban_emoji and policy.unban_emoji must not be identical")
 	}
 	if common := findCommonElements(c.Filters.Kind.AllowedKinds, c.Filters.Kind.DeniedKinds); len(common) > 0 {
-		return fmt.Errorf("policy.allowed_kinds and policy.denied_kinds must not overlap: %v", common)
+		return fmt.Errorf("filters.policy.allowed_kinds and filters.policy.denied_kinds must not overlap: %v", common)
 	}
 
 	// --- [filters] ---
@@ -161,8 +201,8 @@ func (c *Config) validate() error {
 	// [filters.emergency]
 	ef := c.Filters.Emergency
 	if ef.Enabled {
-		if ef.NewKeysRate <= 0 {
-			return errors.New("filters.emergency.new_keys_rate must be > 0")
+		if !isFinite(ef.NewKeysRate) || ef.NewKeysRate <= 0 {
+			return errors.New("filters.emergency.new_keys_rate must be finite and > 0")
 		}
 		if ef.NewKeysBurst < 0 {
 			return errors.New("filters.emergency.new_keys_burst must be >= 0")
@@ -174,8 +214,8 @@ func (c *Config) validate() error {
 			return errors.New("filters.emergency.ttl must be a positive duration")
 		}
 		if ef.PerIP.Enabled {
-			if ef.PerIP.Rate <= 0 {
-				return errors.New("filters.emergency.per_ip.rate must be > 0")
+			if !isFinite(ef.PerIP.Rate) || ef.PerIP.Rate <= 0 {
+				return errors.New("filters.emergency.per_ip.rate must be finite and > 0")
 			}
 			if ef.PerIP.Burst < 0 {
 				return errors.New("filters.emergency.per_ip.burst must be >= 0")
@@ -197,12 +237,12 @@ func (c *Config) validate() error {
 
 	// [filters.rate_limiter]
 	if c.Filters.RateLimiter.Enabled {
-		if c.Filters.RateLimiter.DefaultRate < 0 || c.Filters.RateLimiter.DefaultBurst <= 0 {
-			return errors.New("filters.rate_limiter: default_rate must be >= 0 and default_burst must be > 0")
+		if !isFinite(c.Filters.RateLimiter.DefaultRate) || c.Filters.RateLimiter.DefaultRate < 0 || c.Filters.RateLimiter.DefaultBurst <= 0 {
+			return errors.New("filters.rate_limiter: default_rate must be finite and >= 0 and default_burst must be > 0")
 		}
 		for i, rule := range c.Filters.RateLimiter.Rules {
-			if rule.Rate < 0 || rule.Burst <= 0 {
-				return fmt.Errorf("filters.rate_limiter.rule[%d] ('%s'): rate must be >= 0 and burst must be > 0", i, rule.Description)
+			if !isFinite(rule.Rate) || rule.Rate < 0 || rule.Burst <= 0 {
+				return fmt.Errorf("filters.rate_limiter.rule[%d] ('%s'): rate must be finite and >= 0 and burst must be > 0", i, rule.Description)
 			}
 		}
 	}
@@ -297,7 +337,7 @@ func (c *Config) validate() error {
 
 				for similar, confidence := range similarMap {
 					// Requirement 2: All confidence values must be in the [0.0, 1.0] range.
-					if confidence < 0.0 || confidence > 1.0 {
+					if !isFinite(confidence) || confidence < 0.0 || confidence > 1.0 {
 						return fmt.Errorf(
 							"filters.language.primary_accept_threshold['%s']: confidence for '%s' is out of range [0.0, 1.0], got %f",
 							primary,
@@ -319,11 +359,18 @@ func (c *Config) validate() error {
 		if ec.MinDelay < 0 {
 			return errors.New("filters.ephemeral_chat.min_delay_between_messages must not be negative")
 		}
-		if ec.MaxCapsRatio < 0.0 || ec.MaxCapsRatio > 1.0 {
+		if !isFinite(ec.MaxCapsRatio) || ec.MaxCapsRatio < 0.0 || ec.MaxCapsRatio > 1.0 {
 			return errors.New("filters.ephemeral_chat.max_caps_ratio must be between 0.0 and 1.0")
 		}
 		if ec.MinLettersForCapsCheck <= 0 || ec.MaxWordLength <= 0 || ec.RequiredPoWOnLimit <= 0 {
 			return errors.New("filters.ephemeral_chat: min_letters_for_caps_check, max_word_length, and required_pow_on_limit must be > 0 when enabled")
+		}
+		// Zero rate and burst are valid and mean that every message needs PoW.
+		if ec.RateLimitRate < 0 || !isFinite(ec.RateLimitRate) {
+			return errors.New("filters.ephemeral_chat.rate_limit_rate must not be negative or non-finite")
+		}
+		if ec.RateLimitBurst < 0 {
+			return errors.New("filters.ephemeral_chat.rate_limit_burst must not be negative")
 		}
 		// This check can be 0 (to disable it), but not negative.
 		if ec.MaxRepeatChars < 0 {
@@ -334,7 +381,7 @@ func (c *Config) validate() error {
 	// [filters.repost_abuse]
 	ra := c.Filters.RepostAbuse
 	if ra.Enabled {
-		if ra.MaxRatio < 0.0 || ra.MaxRatio > 1.0 {
+		if !isFinite(ra.MaxRatio) || ra.MaxRatio < 0.0 || ra.MaxRatio > 1.0 {
 			return errors.New("filters.repost_abuse.max_ratio must be between 0.0 and 1.0")
 		}
 		if ra.MinEvents < 0 {
@@ -383,24 +430,36 @@ func (c *Config) validate() error {
 
 func Load(path string, useDefaults bool) (*Config, bool, error) {
 	cfg := defaultConfig()
-	defaultsUsed := false
 
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
+	md, err := toml.DecodeFile(path, cfg)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			if useDefaults {
-				defaultsUsed = true
-				if err := cfg.validate(); err != nil {
-					return nil, true, err
-				}
-				return cfg, defaultsUsed, nil
+			if !useDefaults {
+				return nil, false, fmt.Errorf("config file not found at %s", path)
 			}
-			return nil, false, fmt.Errorf("config file not found at %s", path)
+
+			// Built-in defaults enable moderation reactions, but a moderator
+			// pubkey can only come from a config file. Disable moderation so
+			// that the documented -use-defaults mode can actually start.
+			cfg.Policy.BanEmoji = ""
+			cfg.Policy.UnbanEmoji = ""
+			if err := cfg.validate(); err != nil {
+				return nil, true, err
+			}
+			slog.Warn("Config file not found, running with built-in defaults; moderation is disabled", "path", path)
+			return cfg, true, nil
 		}
 		return nil, false, fmt.Errorf("failed to load config file %s: %w", path, err)
+	}
+
+	// Never activate a configuration with silently missing policy settings.
+	// On reload the caller keeps the previous configuration if Load fails.
+	if keys := undecodedKeyNames(md); len(keys) > 0 {
+		return nil, false, fmt.Errorf("unrecognized configuration keys in %s: %s", path, strings.Join(keys, ", "))
 	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, false, err
 	}
-	return cfg, defaultsUsed, nil
+	return cfg, false, nil
 }

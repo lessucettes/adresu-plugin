@@ -34,8 +34,11 @@ func NewKeywordFilter(cfg *config.KeywordFilterConfig) (*KeywordFilter, error) {
 
 	for _, rule := range cfg.Rules {
 		// Compile simple words into case-insensitive whole-word regexes.
+		// Go's \b is ASCII-only, so it never matches around standalone
+		// non-ASCII words; delimit on Unicode letters, digits, and "_" instead.
 		for _, word := range rule.Words {
-			compiled, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(word) + `\b`)
+			pattern := `(?i)(^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(word) + `($|[^\p{L}\p{N}_])`
+			compiled, err := regexp.Compile(pattern)
 			if err != nil {
 				return nil, fmt.Errorf("internal error compiling keyword '%s': %w", word, err)
 			}
@@ -78,20 +81,20 @@ func (f *KeywordFilter) Match(_ context.Context, event *nostr.Event, meta map[st
 	newResult := NewResultFunc(keywordFilterName)
 
 	if !f.enabled {
-		return newResult(true, "filter_disabled", nil)
+		return newResult(true, "Filter is disabled.", nil)
 	}
 
 	rules, exists := f.kindToRules[event.Kind]
 	if !exists {
-		return newResult(true, "no_rules_for_kind", nil)
+		return newResult(true, "No rules apply to this event kind.", nil)
 	}
 
 	for _, rule := range rules {
 		if rule.regex.MatchString(event.Content) {
-			reason := fmt.Sprintf("forbidden_pattern_found:'%s'", rule.source)
+			reason := fmt.Sprintf("Event content matches forbidden pattern %q.", rule.source)
 			return newResult(false, reason, nil)
 		}
 	}
 
-	return newResult(true, "no_forbidden_patterns_found", nil)
+	return newResult(true, "Event content does not match any forbidden patterns.", nil)
 }

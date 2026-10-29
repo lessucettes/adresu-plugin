@@ -11,7 +11,7 @@ This plugin acts as an orchestration layer for the filter library [Adresu Kit](h
 * **Filter Pipeline**: Executes a sequence of filters from `adresu-kit` and this plugin.
 * **Stateful Moderation**: Provides filters that depend on an external state (a BadgerDB database).
     * **Banned Author Checks**: Rejects events from authors in a persistent ban list.
-    * **Moderator Actions**: Allows a moderator to ban/unban users via Nostr reactions. Banning triggers a call to `strfry delete` to purge the user's events.
+    * **Moderator Actions**: Allows a moderator to ban/unban users via Nostr reactions. Banning triggers a call to `strfry delete` to purge the user's events. Applied reactions are recorded atomically with the ban/unban in the plugin database; replaying the same reaction does not repeat the action, including after reload or restart.
     * **Autoban**: Automatically bans users based on a configurable number of "strikes" (rejected events).
 * **Hot-Reload**: The `config.toml` can be reloaded on the fly without restarting the plugin.
 
@@ -19,13 +19,15 @@ This plugin acts as an orchestration layer for the filter library [Adresu Kit](h
 
 ## 🚀 Installation
 
+Requires Go 1.25.1 or newer.
+
 ```bash
 # Clone the repository
 git clone https://github.com/lessucettes/adresu-plugin.git
 cd adresu-plugin
 
-# Fetch dependencies
-go get
+# Download dependencies (go build also fetches them automatically)
+go mod download
 
 # Build the binary
 go build ./cmd/adresu-plugin
@@ -64,6 +66,24 @@ writePolicy {
 ## ⚙️ Configuration
 
 All behavior is controlled via `config.toml`. See `config.toml.example` for a full list of options. The configuration allows you to chain any filters from `adresu-kit` and enable the stateful moderation policies of this plugin.
+
+Durations use Go duration syntax (`30m`, `24h`, `720h`). There is no day unit: write `168h` instead of `7d`.
+
+Keys are scoped to their table. Kind allow/deny lists belong under `[filters.policy]`, and the global freshness limits are `[filters.freshness] default_max_past`/`default_max_future`; `max_past`/`max_future` are only valid inside a `[[filters.freshness.rule]]`. Unrecognized or misplaced keys are configuration errors: startup and `-validate` fail with a list of these keys. On reload, the error is logged and the previous working configuration remains active. No legacy aliases or automatic key migration are supported.
+
+For client publications, `strfry` applies its own `events.rejectEventsOlderThanSeconds` and `events.rejectEventsNewerThanSeconds` before invoking the plugin, so plugin freshness limits can only tighten those bounds; a larger plugin limit has no effect.
+
+The built-in defaults enable moderation reactions, so `policy.moderator_pubkey` is required unless both `policy.ban_emoji` and `policy.unban_emoji` are cleared. When the configuration file is missing, `-use-defaults` starts with all filters and moderation disabled.
+
+### Hot reload
+
+The file passed to `-config` is watched while the plugin runs. After an edit, the configuration is re-read, validated, and swapped in without a restart; if loading or validation fails, the error is logged and the previous configuration stays active. Both relative and absolute `-config` paths are supported. For a symlinked configuration file, the watcher follows target edits and replacement of the configured link.
+
+Two process-wide settings are applied only at startup and require a restart: `database.path` (the database handle is opened once and reused by reloaded pipelines) and `log.level` (the logger is created once). Reload does apply `log.rejection_levels`, filter settings, and moderation settings.
+
+### Validation
+
+`-validate` is not a read-only syntax check. It opens (and may create) the configured Badger database and builds the full filter pipeline, including the language-detection models. Point it at a disposable database path rather than the one used by a running relay.
 
 -----
 

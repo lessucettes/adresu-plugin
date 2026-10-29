@@ -3,11 +3,12 @@ package policy
 import (
 	"context"
 	"net"
+	"sync"
 
-	lru "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/time/rate"
 
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
 
@@ -16,11 +17,12 @@ const (
 )
 
 type EmergencyFilter struct {
+	mu            sync.Mutex
 	newKeyLimiter *rate.Limiter
-	recentSeen    *lru.LRU[string, struct{}]
+	recentSeen    *cache.LRU[string, struct{}]
 
 	perIPEnabled  bool
-	perIPLimiters *lru.LRU[string, *rate.Limiter]
+	perIPLimiters *cache.LRU[string, *rate.Limiter]
 	perIPRate     rate.Limit
 	perIPBurst    int
 
@@ -35,12 +37,12 @@ func NewEmergencyFilter(cfg *config.EmergencyFilterConfig) (*EmergencyFilter, er
 
 	filter := &EmergencyFilter{
 		newKeyLimiter: rate.NewLimiter(rate.Limit(cfg.NewKeysRate), cfg.NewKeysBurst),
-		recentSeen:    lru.NewLRU[string, struct{}](cfg.CacheSize, nil, cfg.TTL),
+		recentSeen:    cache.NewLRU[string, struct{}](cfg.CacheSize, cfg.TTL),
 	}
 
 	if cfg.PerIP.Enabled {
 		filter.perIPEnabled = true
-		filter.perIPLimiters = lru.NewLRU[string, *rate.Limiter](cfg.PerIP.CacheSize, nil, cfg.PerIP.TTL)
+		filter.perIPLimiters = cache.NewLRU[string, *rate.Limiter](cfg.PerIP.CacheSize, cfg.PerIP.TTL)
 		filter.perIPRate = rate.Limit(cfg.PerIP.Rate)
 		filter.perIPBurst = cfg.PerIP.Burst
 		filter.ipv4Prefix = cfg.PerIP.IPv4Prefix
@@ -54,15 +56,17 @@ func (f *EmergencyFilter) Match(_ context.Context, ev *nostr.Event, meta map[str
 	newResult := NewResultFunc(emergencyFilterName)
 
 	if f.newKeyLimiter == nil {
-		return newResult(true, "filter_disabled", nil)
+		return newResult(true, "Filter is disabled.", nil)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
-	pk := ev.PubKey
+	pk := authorKey(ev)
 	if pk == "" {
-		return newResult(true, "pubkey_empty", nil)
+		return newResult(true, "Event has no public key; new-key rate check was skipped.", nil)
 	}
 	if _, ok := f.recentSeen.Get(pk); ok {
-		return newResult(true, "pubkey_recently_seen", nil)
+		return newResult(true, "Public key was recently seen and does not count as new.", nil)
 	}
 
 	if f.perIPEnabled {
@@ -72,21 +76,21 @@ func (f *EmergencyFilter) Match(_ context.Context, ev *nostr.Event, meta map[str
 			lim, ok := f.perIPLimiters.Get(key)
 			if !ok {
 				lim = rate.NewLimiter(f.perIPRate, f.perIPBurst)
-				f.perIPLimiters.Add(key, lim)
 			}
+			f.perIPLimiters.Add(key, lim)
 
 			if !lim.Allow() {
-				return newResult(false, "new_pubkey_rate_limit_exceeded_per_ip", nil)
+				return newResult(false, "Rate limit for new public keys from this IP address or network exceeded.", nil)
 			}
 		}
 	}
 
 	if !f.newKeyLimiter.Allow() {
-		return newResult(false, "new_pubkey_rate_limit_exceeded_global", nil)
+		return newResult(false, "Relay-wide rate limit for new public keys exceeded.", nil)
 	}
 
 	f.recentSeen.Add(pk, struct{}{})
-	return newResult(true, "new_pubkey_accepted", nil)
+	return newResult(true, "New public key is within the allowed rate limits.", nil)
 }
 
 func normalizeIPWithOptionalPrefixes(ipStr string, v4Prefix, v6Prefix int) string {

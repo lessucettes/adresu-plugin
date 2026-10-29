@@ -55,6 +55,11 @@ func IsPoWValid(event *nostr.Event, minDifficulty int) bool {
 	if minDifficulty <= 0 {
 		return true
 	}
+	if event == nil || !strings.EqualFold(event.ID, event.GetID()) {
+		// Without matching the ID to the event body the nonce tag and the
+		// leading zero bits prove nothing about this event.
+		return false
+	}
 	nonceTag := event.Tags.FindLast("nonce")
 	if len(nonceTag) < 3 {
 		return false

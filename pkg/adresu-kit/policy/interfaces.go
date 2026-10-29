@@ -11,7 +11,7 @@ import (
 type FilterResult struct {
 	Allowed  bool
 	Filter   string
-	Reason   string
+	Reason   string // Human-readable explanation, also used in rejection logs and responses.
 	Duration time.Duration
 }
 

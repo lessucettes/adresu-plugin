@@ -5,11 +5,19 @@
 # and uncomment/edit the values according to your needs.
 #
 #   cp config.toml.example config.toml
+#
+# Table headers are commented out as well. When enabling an option, uncomment
+# its section header too (e.g. [filters.rate_limiter]); otherwise the key ends
+# up in the previous table and fails validation.
+#
+# Unrecognized or misplaced keys fail validation and prevent startup.
+# On reload, the error is logged and the previous configuration stays active.
 # ==============================================================================
 
 # --- Log Settings ---
 #[log]
 # Log level can be: "debug", "info", "warn", "error".
+# Changing the level of a running process requires a restart.
 #level = "info"
 
 # Allows overriding the log level for rejections from specific filters.
@@ -26,9 +34,9 @@
 
 # --- Basic Service Settings ---
 #[database]
-# Path to the plugin's database file. It will be created automatically.
+# Path to the plugin's database directory. It will be created automatically.
 # Ensure the directory exists and the application has write permissions.
-#path = "./plugin.db"
+#path = "./plugin-db"
 
 #[strfry]
 # Paths to the strfry executable and its configuration file.
@@ -50,16 +58,15 @@
 # Emoji used in a reaction to an event to trigger an UNBAN.
 #unban_emoji = "🔓"
 
-# Default duration of a manual ban. Examples: "24h", "7d", "30d".
+# Moderation reactions are enabled by default, so 'moderator_pubkey' above is
+# required. Set an emoji to "" to disable that action; set both to "" to
+# disable moderation completely.
+
+# Default duration of a manual ban. Durations use Go syntax: "30m", "24h",
+# "720h". There is no day unit, so use hours for multi-day durations.
 #ban_duration = "720h"
-
-# List of event kinds that your relay WILL accept.
-# If 'allowed_kinds' is defined, any kind NOT in this list is denied.
-#allowed_kinds = [0, 1, 3, 5, 6, 7, 30023]
-
-# List of event kinds that your relay will NOT accept.
-# If 'denied_kinds' is defined, any kind NOT in this list is allowed.
-#denied_kinds = [4, 40, 41, 42, 43, 44]
+# Repeated bans can extend an existing ban but never shorten it. Unban first
+# if you intentionally need to replace a ban with a shorter duration.
 
 
 # ==============================================================================
@@ -68,20 +75,36 @@
 # All filters are disabled unless their section is uncommented.
 #[filters]
 
+# --- Kind Filter ---
+# NOTE: kind lists belong to [filters.policy], not to [policy] above.
+#[filters.policy]
+# List of event kinds that your relay WILL accept.
+# If 'allowed_kinds' is non-empty, any kind NOT in this list is denied.
+#allowed_kinds = [0, 1, 3, 5, 6, 7, 30023]
+
+# List of event kinds that your relay will NOT accept.
+# If 'denied_kinds' is non-empty, kinds in this list are denied.
+# 'allowed_kinds' and 'denied_kinds' must not overlap.
+#denied_kinds = [4, 40, 41, 42, 43, 44]
+
 # --- Freshness Filter ---
 # Rejects events that are too old or have a timestamp too far in the future.
 #[filters.freshness]
-# If default_max_past or default_max_future are set, they apply to all
-# kinds that don't have a specific rule below.
+# At this level the keys are default_max_past/default_max_future.
+# max_past/max_future are only valid inside a [[filters.freshness.rule]].
+# If non-zero, the defaults apply to all kinds that don't have a specific
+# rule below; 0 disables that check.
 #default_max_past   = "24h"
 #default_max_future = "15m"
 
 # You can define specific rules for different kinds.
-# The first rule that matches an event's kind will be used.
+# If several rules list the same kind, the last one wins. A rule replaces both
+# default limits for its kinds, so set both max_past and max_future in it
+# (0 or omitted means no limit).
 # [[filters.freshness.rule]]
 # description    = "Allow old articles, but new ones should be recent"
 # kinds          = [30023]
-# max_past       = "7d" # Long-form articles can be up to 7 days old.
+# max_past       = "168h" # Long-form articles can be up to 7 days old.
 # max_future     = "15m"
 
 # [[filters.freshness.rule]]
@@ -96,13 +119,14 @@
 #default_max_size_bytes = 16384 # 16 KiB
 
 # You can define specific rules for different kinds.
+# A rule overrides default_max_size_bytes for its kinds; 0 means unlimited.
 #[[filters.size.rule]]
 #description    = "Limit long-form articles to 100 KiB"
 #kinds          = [30023]
 #max_size_bytes = 102400
 
 # --- Tags Filter ---
-# Sets limits on event tags. Rules are applied in order.
+# Sets limits on event tags. If several rules list the same kind, the last one wins.
 #[filters.tags]
 #[[filters.tags.rule]]
 #description    = "Rules for standard notes"
@@ -127,23 +151,25 @@
 #min_delay_between_messages = "1s" # Anti-flood delay between messages from the same user.
 #max_caps_ratio             = 0.0  # 0.0 to disable. Max ratio of uppercase letters (e.g., 0.5 = 50%).
 #min_letters_for_caps_check = 20   # Minimum number of letters to trigger caps check.
-#max_character_repetitions  = 0    # 0 to disable. Max number of repeating characters (e.g., "sooooo" > 4).
-#max_word_length            = 120  # Rejects messages with words longer than this.
-#block_zalgo_text           = true # Blocks text with excessive combining characters.
+#max_character_repetitions  = 0    # Rejects an actual repeated run of at least this length; 0 disables, 1 rejects any adjacent repetition.
+#max_word_length            = 120  # Rejects a non-whitespace run of at least this length.
+#block_zalgo_text           = true # Blocks text containing combining marks used for Zalgo; one mark is enough.
 #cache_size                 = 10000 # In-memory cache size for tracking users.
 #rate_limit_rate            = 0.166 # Events per second if PoW is not used. ~10/min.
 #rate_limit_burst           = 5     # Burst allowance for the rate limiter.
 #required_pow_on_limit      = 12    # Required PoW difficulty if rate limit is exceeded.
+# Set both rate_limit_rate and rate_limit_burst to 0 to require PoW for every message.
 
 # --- Language Filter ---
 #[filters.language]
 #enabled                = false
-#allowed_languages      = ["en", "ja"] # List of allowed languages.
+#allowed_languages      = ["en", "ja", "ru"] # English names or ISO 639-1 codes.
 #kinds_to_check         = [1, 30023]
 #min_length_for_check   = 20 # Skip check for very short texts.
 #approved_cache_ttl     = "30m" # Cache duration for authors who pass the check.
 #approved_cache_size    = 10000
 # Special thresholds for similar languages. Example: allows Russian if detected as Ukrainian.
+# Every primary key must also appear in allowed_languages using the same spelling.
 #[filters.language.primary_accept_threshold.ru]
 #uk = 0.0002
 #default = 0.018 # Default minimum confidence for a language to be accepted as Russian.
@@ -165,14 +191,16 @@
 #ttl        = "1m" # How long a limiter for an inactive IP/subnet is kept in memory.
 
 # --- IP Normalization ---
-# If a prefix is > 0, groups IPs into subnets. 0 or absent = disabled.
+# These keys belong to [filters.emergency.per_ip] and are used only when
+# per_ip.enabled = true. If a prefix is > 0, groups IPs into subnets.
+# 0 or absent = disabled.
 #ipv4_prefix = 0 # CIDR prefix for IPv4 addresses (e.g., 24).
 #ipv6_prefix = 0 # CIDR prefix for IPv6 addresses (e.g., 64).
 
 # --- Global Rate Limiter ---
 #[filters.rate_limiter]
 #enabled       = false
-#by            = "both" # Limit by "ip", "pubkey", or "both".
+#by            = "both" # Limit by "ip", "pubkey", or "both". Defaults to "both".
 #cache_size    = 65536
 #ttl           = "10m" # How long an entry stays in cache after last activity.
 #default_rate  = 0.5  # Default events per second.
@@ -191,30 +219,30 @@
 # --- Repost Abuse Filter ---
 #[filters.repost_abuse]
 #enabled                  = false
-#max_ratio                = 0.7 # Max ratio of reposts (kinds 6, 16) to other events. 0.7 = 70%.
+#max_ratio                = 0.7 # Rejects repost shares >= 70% of tracked posts (kinds 6/16 and kind-1 q-tag quotes count as reposts).
 #min_events               = 20  # Minimum number of events from a user before this filter applies.
 #reset_duration           = "12h" # User's activity ratio resets after this period of inactivity.
 #cache_size               = 10000 # Maximum number of unique users to track in memory at once.
 #cache_ttl                = "24h" # How long user activity data is kept in cache.
-#count_reject_as_activity = false # If true, events rejected by other filters still count as user activity.
-#require_nip21_in_quote   = false # For kind 16, require a "nostr:..." URI in the content.
+#count_reject_as_activity = false # Rejected repost attempts refresh the inactivity timestamp; other filters' rejections are not observed.
+#require_nip21_in_quote   = false # Only count kind-1 q-tag quotes as reposts when content contains a note/nevent/naddr reference.
 
 # --- Banned Author Filter ---
 #[filters.banned_author]
 # If true, the filter will perform full NIP-26 validation to detect
 # and block events from banned delegators. This prevents ban evasion.
 # It is disabled by default because it adds a small cryptographic workload.
-# check_nip26 = true
+#check_nip26 = true
 
 # --- Automatic Ban Filter (Autoban) ---
 #[filters.autoban]
 #enabled             = false
-#max_strikes         = 10 # Ban after this many rejected events...
+#max_strikes         = 10 # Ban after this many distinct, validly signed rejected events...
 #strike_window       = "1h" # ...if they occurred within this time window.
 #ban_duration        = "24h" # Duration of the automatic ban.
 #strikes_cache_size  = 10000
 #cooldown_cache_size = 1000
-#cooldown_duration   = "1m" # User won't get a new strike for this duration after receiving one.
-# ban_timeout         = "10s" # timeout for DB ban op (0/absent => fallback 5s)
+#cooldown_duration   = "1m" # No new strikes for this duration after an automatic ban is triggered.
+#ban_timeout         = "10s" # timeout for DB ban op (0/absent => fallback 5s)
 # List of filters whose rejections DO NOT result in a 'strike'.
 #exclude_filters_from_strikes = ["RateLimiterFilter", "FreshnessFilter"]

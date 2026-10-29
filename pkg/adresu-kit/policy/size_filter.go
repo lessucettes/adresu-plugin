@@ -48,20 +48,20 @@ func (f *SizeFilter) Match(_ context.Context, event *nostr.Event, meta map[strin
 	}
 
 	if maxSize <= 0 {
-		return newResult(true, "size_unlimited_for_kind", nil)
+		return newResult(true, "Event size is unlimited for this event kind.", nil)
 	}
 
 	raw, err := json.Marshal(event)
 	if err != nil {
 		// This is a critical error, propagate it to the pipeline.
-		return newResult(false, "internal_marshal_failed", err)
+		return newResult(false, "Failed to encode event as JSON for the size check.", err)
 	}
 	size := len(raw)
 
 	if size > maxSize {
-		reason := fmt.Sprintf("event_too_large:size_%d,max_%d", size, maxSize)
+		reason := fmt.Sprintf("Event is too large (%d bytes; maximum allowed: %d bytes).", size, maxSize)
 		return newResult(false, reason, nil)
 	}
 
-	return newResult(true, "size_ok", nil)
+	return newResult(true, "Event size is within the allowed limit.", nil)
 }
