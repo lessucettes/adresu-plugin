@@ -137,15 +137,15 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 		return newResult(false, "Content language could not be detected.", nil)
 	}
 
-	langCode := detectedLang.IsoCode639_1().String()
+	langName := detectedLang.String()
 	if _, isAllowed := f.allowedLangs[detectedLang]; isAllowed {
 		if f.approvedCache != nil {
 			f.approvedCache.Add(authorKey(event), struct{}{})
 		}
 		if meta != nil {
-			meta["language"] = langCode
+			meta["language"] = langName
 		}
-		return newResult(true, fmt.Sprintf("Detected language %q is allowed on this relay.", langCode), nil)
+		return newResult(true, fmt.Sprintf("Detected language %q is allowed on this relay.", langName), nil)
 	}
 
 	for primaryLang, similarLangsMap := range f.thresholds {
@@ -159,15 +159,15 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 					f.approvedCache.Add(authorKey(event), struct{}{})
 				}
 				if meta != nil {
-					meta["language"] = langCode
+					meta["language"] = langName
 				}
-				primaryLangCode := primaryLang.IsoCode639_1().String()
-				return newResult(true, fmt.Sprintf("Detected language %q is accepted because confidence for allowed language %q exceeds its threshold.", langCode, primaryLangCode), nil)
+				primaryLangName := primaryLang.String()
+				return newResult(true, fmt.Sprintf("Detected language %q is accepted because confidence for allowed language %q exceeds its threshold.", langName, primaryLangName), nil)
 			}
 		}
 	}
 
-	return newResult(false, fmt.Sprintf("Detected language %q is not allowed on this relay.", langCode), nil)
+	return newResult(false, fmt.Sprintf("Detected language %q is not allowed on this relay.", langName), nil)
 }
 
 func GetGlobalDetector() lingua.LanguageDetector {
