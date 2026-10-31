@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -42,12 +42,12 @@ func NewKindFilter(cfg *config.KindFilterConfig) (*KindFilter, error) {
 func (f *KindFilter) Match(_ context.Context, event *nostr.Event, meta map[string]any) (FilterResult, error) {
 	newResult := NewResultFunc(kindFilterName)
 
-	if _, isDenied := f.denied[event.Kind]; isDenied {
+	if _, isDenied := f.denied[int(event.Kind)]; isDenied {
 		return newResult(false, fmt.Sprintf("Event kind %d is denied by relay policy.", event.Kind), nil)
 	}
 
 	if f.allowed != nil {
-		if _, isAllowed := f.allowed[event.Kind]; !isAllowed {
+		if _, isAllowed := f.allowed[int(event.Kind)]; !isAllowed {
 			return newResult(false, fmt.Sprintf("Event kind %d is not in the relay's list of allowed kinds.", event.Kind), nil)
 		}
 	}

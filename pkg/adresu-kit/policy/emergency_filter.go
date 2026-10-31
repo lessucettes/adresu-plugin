@@ -5,7 +5,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 	"golang.org/x/time/rate"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
@@ -19,7 +19,7 @@ const (
 type EmergencyFilter struct {
 	mu            sync.Mutex
 	newKeyLimiter *rate.Limiter
-	recentSeen    *cache.LRU[string, struct{}]
+	recentSeen    *cache.LRU[nostr.PubKey, struct{}]
 
 	perIPEnabled  bool
 	perIPLimiters *cache.LRU[string, *rate.Limiter]
@@ -37,7 +37,7 @@ func NewEmergencyFilter(cfg *config.EmergencyFilterConfig) (*EmergencyFilter, er
 
 	filter := &EmergencyFilter{
 		newKeyLimiter: rate.NewLimiter(rate.Limit(cfg.NewKeysRate), cfg.NewKeysBurst),
-		recentSeen:    cache.NewLRU[string, struct{}](cfg.CacheSize, cfg.TTL),
+		recentSeen:    cache.NewLRU[nostr.PubKey, struct{}](cfg.CacheSize, cfg.TTL),
 	}
 
 	if cfg.PerIP.Enabled {
@@ -62,7 +62,7 @@ func (f *EmergencyFilter) Match(_ context.Context, ev *nostr.Event, meta map[str
 	defer f.mu.Unlock()
 
 	pk := authorKey(ev)
-	if pk == "" {
+	if pk == nostr.ZeroPK {
 		return newResult(true, "Event has no public key; new-key rate check was skipped.", nil)
 	}
 	if _, ok := f.recentSeen.Get(pk); ok {

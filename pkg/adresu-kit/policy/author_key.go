@@ -1,19 +1,13 @@
 package policy
 
-import (
-	"strings"
-
-	"github.com/nbd-wtf/go-nostr"
-)
+import "fiatjaf.com/nostr"
 
 // authorKey returns the canonical key for an event author's per-author state.
 //
-// NIP-01 spells public keys as lowercase hex, but relays such as strfry hash the
-// event exactly as received and decode hex case-insensitively, so a client can
-// present the same keypair with any mix of uppercase and lowercase digits. Keys
-// for rate limiters, activity counters and approval caches therefore have to be
-// canonicalized, or one author could reset its state by changing the casing of
-// its pubkey.
-func authorKey(event *nostr.Event) string {
-	return strings.ToLower(event.PubKey)
+// The decoded event already carries the author identity as a binary public key,
+// so relay-side hex casing cannot produce two spellings of the same author:
+// every filter keys rate limiters, activity counters and approval caches on the
+// same [32]byte value for one keypair.
+func authorKey(event *nostr.Event) nostr.PubKey {
+	return event.PubKey
 }

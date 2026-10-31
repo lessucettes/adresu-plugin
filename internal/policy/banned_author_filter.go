@@ -2,11 +2,11 @@ package policy
 
 import (
 	"context"
-	"strings"
+
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
 	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
-	"github.com/nbd-wtf/go-nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/store"
@@ -30,8 +30,8 @@ func NewBannedAuthorFilter(s store.Store, cfg *config.BannedAuthorFilterConfig) 
 // Badger already caches hot keys internally, and a filter-local cache would
 // keep authors publishable for its TTL after a moderator ban and keep
 // unbanned authors rejected after an unban.
-func (f *BannedAuthorFilter) isBanned(ctx context.Context, pubkey string) (bool, error) {
-	return f.store.IsAuthorBanned(ctx, strings.ToLower(pubkey))
+func (f *BannedAuthorFilter) isBanned(ctx context.Context, pubkey nostr.PubKey) (bool, error) {
+	return f.store.IsAuthorBanned(ctx, pubkey.Hex())
 }
 
 func (f *BannedAuthorFilter) Match(ctx context.Context, event *nostr.Event, meta map[string]any) (kitpolicy.FilterResult, error) {
@@ -58,7 +58,7 @@ func (f *BannedAuthorFilter) Match(ctx context.Context, event *nostr.Event, meta
 				continue
 			}
 
-			delegator, err := nip.ValidateDelegationTag(event, delegationTag)
+			delegator, err := nip.ValidateDelegationTag(ctx, event, delegationTag)
 			if err != nil {
 				return newResult(false, "Event delegation is invalid.", nil)
 			}
@@ -66,7 +66,11 @@ func (f *BannedAuthorFilter) Match(ctx context.Context, event *nostr.Event, meta
 				continue
 			}
 
-			banned, err := f.isBanned(ctx, delegator)
+			delegatorPubKey, err := nostr.PubKeyFromHex(delegator)
+			if err != nil {
+				return newResult(false, "Event delegation is invalid.", nil)
+			}
+			banned, err := f.isBanned(ctx, delegatorPubKey)
 			if err != nil {
 				return newResult(false, "Failed to check whether the delegating author is banned.", err)
 			}

@@ -5,12 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
+	"fiatjaf.com/nostr"
+
 	lru "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
-	"github.com/nbd-wtf/go-nostr"
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/store"
@@ -20,8 +21,8 @@ import (
 type AutoBanFilter struct {
 	mu sync.Mutex
 
-	strikes         *lru.LRU[string, *RejectionStats]
-	banningCooldown *lru.LRU[string, struct{}]
+	strikes         *lru.LRU[nostr.PubKey, *RejectionStats]
+	banningCooldown *lru.LRU[nostr.PubKey, struct{}]
 
 	store store.Store
 	cfg   *config.AutoBanFilterConfig
@@ -34,7 +35,7 @@ type AutoBanFilter struct {
 type RejectionStats struct {
 	StrikeCount     int
 	FirstStrikeTime time.Time
-	EventIDs        []string
+	EventIDs        []nostr.ID
 }
 
 // NewAutoBanFilter wires dependencies and cache TTLs from config.
@@ -49,8 +50,8 @@ func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) (*AutoBanF
 		return filter, nil
 	}
 
-	filter.strikes = lru.NewLRU[string, *RejectionStats](cfg.StrikesCacheSize, cfg.StrikeWindow)
-	filter.banningCooldown = lru.NewLRU[string, struct{}](cfg.CooldownCacheSize, cfg.CooldownDuration)
+	filter.strikes = lru.NewLRU[nostr.PubKey, *RejectionStats](cfg.StrikesCacheSize, cfg.StrikeWindow)
+	filter.banningCooldown = lru.NewLRU[nostr.PubKey, struct{}](cfg.CooldownCacheSize, cfg.CooldownDuration)
 	return filter, nil
 }
 
@@ -70,20 +71,21 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 	if event == nil {
 		return
 	}
-	// strfry validates the decoded hash, not its hex letter casing. Keep the
-	// signed event untouched and use its canonical hash for replay accounting.
-	eventID := event.GetID()
-	if !strings.EqualFold(event.ID, eventID) {
+	// The signature covers the event body, not its ID field. An event whose ID
+	// disagrees with the body it carries is not the object its author signed,
+	// so it must not contribute strikes or poison replay accounting.
+	eventID := nip.CanonicalEventID(ctx, event)
+	if event.ID != eventID {
 		return
 	}
 	// Never punish an identity supplied by an event its author did not sign.
 	// This also prevents a forged moderator reaction from banning the moderator.
-	valid, err := event.CheckSignature()
+	valid, err := nip.CheckEventSignature(ctx, event)
 	if err != nil || !valid {
 		return
 	}
 
-	pubkey := strings.ToLower(event.PubKey)
+	pubkey := event.PubKey
 
 	var (
 		shouldBan        bool
@@ -128,7 +130,7 @@ func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event,
 
 	if shouldBan {
 		slog.Warn("Auto-banning user for repeated violations",
-			"pubkey", pubkey,
+			"pubkey", pubkey.Hex(),
 			"strike_count", finalStrikeCount,
 			"ban_duration", f.cfg.BanDuration,
 			"by_filter", filterName,
@@ -151,7 +153,7 @@ func (f *AutoBanFilter) Close() error {
 }
 
 // banUser performs the ban operation in a separate goroutine.
-func (f *AutoBanFilter) banUser(parentCtx context.Context, pubkey string) {
+func (f *AutoBanFilter) banUser(parentCtx context.Context, pubkey nostr.PubKey) {
 	timeout := f.cfg.BanTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -162,12 +164,12 @@ func (f *AutoBanFilter) banUser(parentCtx context.Context, pubkey string) {
 	banCtx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), timeout)
 	defer cancel()
 
-	if err := f.store.BanAuthor(banCtx, pubkey, f.cfg.BanDuration); err != nil {
+	if err := f.store.BanAuthor(banCtx, pubkey.Hex(), f.cfg.BanDuration); err != nil {
 		select {
 		case <-banCtx.Done():
-			slog.Warn("Auto-ban cancelled by context", "pubkey", pubkey, "error", banCtx.Err())
+			slog.Warn("Auto-ban cancelled by context", "pubkey", pubkey.Hex(), "error", banCtx.Err())
 		default:
-			slog.Error("Failed to auto-ban author", "pubkey", pubkey, "error", err)
+			slog.Error("Failed to auto-ban author", "pubkey", pubkey.Hex(), "error", err)
 		}
 	}
 }

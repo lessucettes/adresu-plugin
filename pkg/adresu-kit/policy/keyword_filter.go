@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -84,7 +84,7 @@ func (f *KeywordFilter) Match(_ context.Context, event *nostr.Event, meta map[st
 		return newResult(true, "Filter is disabled.", nil)
 	}
 
-	rules, exists := f.kindToRules[event.Kind]
+	rules, exists := f.kindToRules[int(event.Kind)]
 	if !exists {
 		return newResult(true, "No rules apply to this event kind.", nil)
 	}

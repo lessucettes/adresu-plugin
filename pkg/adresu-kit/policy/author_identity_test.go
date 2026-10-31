@@ -2,29 +2,26 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
 
-// authorPubkeys returns one author's public key in canonical lowercase hex and
-// in an uppercase variant. NIP-01 asks for lowercase hex, but strfry decodes
-// public keys case-insensitively and hashes the event exactly as received, so
-// both spellings are admitted events signed by the same keypair.
-func authorPubkeys(t *testing.T) (lower, upper string) {
-	t.Helper()
-	pk, err := nostr.GetPublicKey(nostr.GeneratePrivateKey())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pk, strings.ToUpper(pk)
+// fixturePubKey returns a deterministic author identity for fixtures that only
+// need a distinct author, not a usable point on the curve. Filters compare the
+// decoded [32]byte identity; they never verify signatures.
+func fixturePubKey(id byte) nostr.PubKey {
+	var pk nostr.PubKey
+	pk[0] = id
+	return pk
 }
 
-func authoredEvent(pubkey string, kind int) *nostr.Event {
+func authoredEvent(pubkey nostr.PubKey, kind nostr.Kind) *nostr.Event {
 	return &nostr.Event{Kind: kind, PubKey: pubkey, Content: "content"}
 }
 
@@ -46,88 +43,44 @@ func repostEventAllowed(t *testing.T, filter *RepostAbuseFilter, event *nostr.Ev
 	return res.Allowed
 }
 
-// Every per-author state store must key on the canonical lowercase public key;
-// otherwise one keypair can reset its limits and counters by changing the case
-// of its pubkey.
-func TestRateLimiterTreatsPubkeyCaseVariantsAsOneAuthor(t *testing.T) {
-	lower, upper := authorPubkeys(t)
-	filter := newRateLimiterFilter(t, config.RateByPubKey)
+// NIP-01 asks for lowercase hex, but relays decode public keys
+// case-insensitively and hash the event exactly as received, so one keypair can
+// arrive with any mix of hex casing. Per-author state keys on the decoded
+// binary key, so every wire spelling must share one limiter. This is the only
+// place casing exists; binary PubKey values have no case.
+func TestWirePubkeyCasingDecodesToOneAuthor(t *testing.T) {
+	canonical := fixturePubKey(0xab).Hex()
+	upperCanonical := strings.ToUpper(canonical)
+	if upperCanonical == canonical {
+		t.Fatalf("fixture %q has no hex letters, so it cannot exercise casing", canonical)
+	}
 
+	parse := func(wirePubKey string) *nostr.Event {
+		t.Helper()
+		raw := fmt.Sprintf(
+			`{"id":%q,"pubkey":%q,"created_at":1,"kind":1,"tags":[],"content":"content","sig":%q}`,
+			strings.Repeat("0", 64), wirePubKey, strings.Repeat("0", 128),
+		)
+		var event nostr.Event
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			t.Fatalf("decode wire event with pubkey %q: %v", wirePubKey, err)
+		}
+		return &event
+	}
+
+	lower := parse(canonical)
+	upper := parse(upperCanonical)
+	if lower.PubKey != upper.PubKey {
+		t.Fatalf("wire casing produced two identities: %s and %s", lower.PubKey.Hex(), upper.PubKey.Hex())
+	}
+
+	filter := newRateLimiterFilter(t, config.RateByPubKey)
 	for i := 0; i < 2; i++ {
-		if !rateLimitedEvent(t, filter, authoredEvent(lower, nostr.KindTextNote)) {
+		if !rateLimitedEvent(t, filter, lower) {
 			t.Fatalf("event %d was limited before the burst was exhausted", i+1)
 		}
 	}
-	if rateLimitedEvent(t, filter, authoredEvent(upper, nostr.KindTextNote)) {
-		t.Fatal("an uppercase spelling of the same pubkey received a fresh burst")
-	}
-}
-
-func TestEphemeralChatTreatsPubkeyCaseVariantsAsOneAuthor(t *testing.T) {
-	lower, upper := authorPubkeys(t)
-	filter := newEphemeralChatFilter(t, ephemeralChatConfig())
-
-	event := authoredEvent(lower, ephemeralChatKind)
-	if res, err := filter.Match(context.Background(), event, nil); err != nil || !res.Allowed {
-		t.Fatalf("first message = (%v, %v), want allowed", res, err)
-	}
-	event.PubKey = upper
-	if res, err := filter.Match(context.Background(), event, nil); err != nil || res.Allowed {
-		t.Fatalf("casing variant = (%v, %v), want rate-limited as the same author", res, err)
-	}
-}
-
-func TestRepostAbuseTreatsPubkeyCaseVariantsAsOneAuthor(t *testing.T) {
-	lower, upper := authorPubkeys(t)
-	filter, err := NewRepostAbuseFilter(&config.RepostAbuseFilterConfig{
-		Enabled:   true,
-		MaxRatio:  0.2,
-		MinEvents: 5,
-		CacheSize: 100,
-		CacheTTL:  time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for i := 0; i < 5; i++ {
-		if !repostEventAllowed(t, filter, authoredEvent(lower, nostr.KindTextNote)) {
-			t.Fatalf("original post %d was rejected", i+1)
-		}
-	}
-	// 1/6 = 16.7% stays below the 20% limit, 2/7 = 28.6% crosses it.
-	if !repostEventAllowed(t, filter, authoredEvent(lower, nostr.KindRepost)) {
-		t.Fatal("first repost was rejected")
-	}
-	if repostEventAllowed(t, filter, authoredEvent(upper, nostr.KindRepost)) {
-		t.Fatal("a casing variant bypassed the repost ratio of the same author")
-	}
-}
-
-func TestEmergencyFilterTreatsPubkeyCaseVariantsAsOneAuthor(t *testing.T) {
-	lower, upper := authorPubkeys(t)
-	other, _ := authorPubkeys(t)
-
-	filter, err := NewEmergencyFilter(&config.EmergencyFilterConfig{
-		Enabled:      true,
-		NewKeysRate:  0.000001,
-		NewKeysBurst: 2,
-		CacheSize:    100,
-		TTL:          time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// The second spelling is the same author, so it must not spend the second
-	// new-key allowance: another genuinely new pubkey still fits in the burst.
-	if !emergencyMatch(t, filter, lower, "") {
-		t.Fatal("first new pubkey was rejected")
-	}
-	if !emergencyMatch(t, filter, upper, "") {
-		t.Fatal("casing variant was rejected as a new pubkey")
-	}
-	if !emergencyMatch(t, filter, other, "") {
-		t.Fatal("casing variant spent a new-key token that belongs to the same author")
+	if rateLimitedEvent(t, filter, upper) {
+		t.Fatal("an uppercase wire spelling of the same pubkey received a fresh burst")
 	}
 }

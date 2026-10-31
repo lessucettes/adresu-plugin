@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 // The constructor explicitly accepts a nil config; Match must not dereference it.

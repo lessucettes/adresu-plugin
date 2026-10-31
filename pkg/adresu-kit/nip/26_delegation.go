@@ -1,6 +1,7 @@
 package nip
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -8,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
+	"fiatjaf.com/nostr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/nbd-wtf/go-nostr"
 )
 
-func ValidateDelegation(event *nostr.Event) (string, error) {
+func ValidateDelegation(ctx context.Context, event *nostr.Event) (string, error) {
 	if event == nil {
 		return "", fmt.Errorf("event is nil")
 	}
@@ -22,13 +23,19 @@ func ValidateDelegation(event *nostr.Event) (string, error) {
 		return "", fmt.Errorf("event has no delegation tag")
 	}
 
-	return ValidateDelegationTag(event, delegationTag)
+	return ValidateDelegationTag(ctx, event, delegationTag)
 }
 
 // ValidateDelegationTag validates a specific NIP-26 delegation tag. Callers
 // that inspect more than the first tag (an event may carry several) must use
 // this instead of ValidateDelegation, which only reads the first tag.
-func ValidateDelegationTag(event *nostr.Event, delegationTag nostr.Tag) (string, error) {
+//
+// The delegation token hashes the delegatee pubkey exactly as the delegator
+// signed it, which may be an uppercase or mixed-case spelling of the wire
+// event. The typed event.PubKey is canonical lowercase, so the spelling is
+// read from the provenance recorded by WithWirePubKey for this event; without
+// such provenance the canonical lowercase hex is used.
+func ValidateDelegationTag(ctx context.Context, event *nostr.Event, delegationTag nostr.Tag) (string, error) {
 	if event == nil {
 		return "", fmt.Errorf("event is nil")
 	}
@@ -43,7 +50,11 @@ func ValidateDelegationTag(event *nostr.Event, delegationTag nostr.Tag) (string,
 		return "", fmt.Errorf("event does not satisfy conditions: %w", err)
 	}
 
-	if err := verifyDelegationSignature(event.PubKey, delegatorPubKeyHex, conditionsStr, sigHex); err != nil {
+	delegateePubKeyHex := event.PubKey.Hex()
+	if wire, ok := wirePubKeyFor(ctx, event); ok {
+		delegateePubKeyHex = wire
+	}
+	if err := verifyDelegationSignature(delegateePubKeyHex, delegatorPubKeyHex, conditionsStr, sigHex); err != nil {
 		return "", fmt.Errorf("signature verification failed: %w", err)
 	}
 
@@ -72,11 +83,13 @@ func validateDelegationConditions(event *nostr.Event, conditionsStr string) erro
 		switch {
 		case strings.HasPrefix(condition, "kind="):
 			hasKindConditions = true
+			// Keep the historical integer spelling, but bound the value so an
+			// out-of-range condition cannot wrap onto a different kind.
 			kind, err := strconv.Atoi(strings.TrimPrefix(condition, "kind="))
-			if err != nil {
+			if err != nil || kind < 0 || kind > 65535 {
 				return fmt.Errorf("invalid 'kind' condition value: %q", condition)
 			}
-			if event.Kind == kind {
+			if int(event.Kind) == kind {
 				kindMatched = true
 			}
 		case strings.HasPrefix(condition, "created_at>"):

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 // FilterResult is the structured return type for all filters.

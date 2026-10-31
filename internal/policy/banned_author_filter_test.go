@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 )
@@ -27,7 +27,7 @@ func TestBannedAuthorFilterReflectsExternalBanAndUnban(t *testing.T) {
 	}
 
 	// A moderator ban (or an autoban) mutates the store behind the filter's back.
-	if err := s.BanAuthor(ctx, pubkey, time.Hour); err != nil {
+	if err := s.BanAuthor(ctx, pubkey.Hex(), time.Hour); err != nil {
 		t.Fatalf("BanAuthor: %v", err)
 	}
 	result, err = filter.Match(ctx, event, nil)
@@ -38,7 +38,7 @@ func TestBannedAuthorFilterReflectsExternalBanAndUnban(t *testing.T) {
 		t.Fatal("filter kept allowing the author after the author was banned")
 	}
 
-	if err := s.UnbanAuthor(ctx, pubkey); err != nil {
+	if err := s.UnbanAuthor(ctx, pubkey.Hex()); err != nil {
 		t.Fatalf("UnbanAuthor: %v", err)
 	}
 	result, err = filter.Match(ctx, event, nil)
@@ -58,7 +58,7 @@ func TestBannedAuthorFilterRejectsBannedAuthor(t *testing.T) {
 	}
 
 	_, pubkey := newKeyPair(t)
-	if err := s.BanAuthor(context.Background(), pubkey, time.Hour); err != nil {
+	if err := s.BanAuthor(context.Background(), pubkey.Hex(), time.Hour); err != nil {
 		t.Fatalf("BanAuthor: %v", err)
 	}
 
@@ -80,12 +80,8 @@ func TestBannedAuthorFilterChecksEveryDelegationTag(t *testing.T) {
 
 	otherSK, otherPubKey := newKeyPair(t)
 	bannedSK, bannedPubKey := newKeyPair(t)
-	delegateeSK, _ := newKeyPair(t)
-	delegateePubKey, err := nostr.GetPublicKey(delegateeSK)
-	if err != nil {
-		t.Fatalf("GetPublicKey: %v", err)
-	}
-	if err := s.BanAuthor(context.Background(), bannedPubKey, time.Hour); err != nil {
+	delegateeSK, delegateePubKey := newKeyPair(t)
+	if err := s.BanAuthor(context.Background(), bannedPubKey.Hex(), time.Hour); err != nil {
 		t.Fatalf("BanAuthor: %v", err)
 	}
 
@@ -96,8 +92,8 @@ func TestBannedAuthorFilterChecksEveryDelegationTag(t *testing.T) {
 		CreatedAt: nostr.Now(),
 		Content:   "delegated",
 		Tags: nostr.Tags{
-			{"delegation", otherPubKey, "", signDelegationToken(t, otherSK, delegateePubKey, "")},
-			{"delegation", bannedPubKey, "", signDelegationToken(t, bannedSK, delegateePubKey, "")},
+			{"delegation", otherPubKey.Hex(), "", signDelegationToken(t, otherSK, delegateePubKey, "")},
+			{"delegation", bannedPubKey.Hex(), "", signDelegationToken(t, bannedSK, delegateePubKey, "")},
 		},
 	}
 	if err := event.Sign(delegateeSK); err != nil {
@@ -121,19 +117,15 @@ func TestBannedAuthorFilterRejectsInvalidLaterDelegationTag(t *testing.T) {
 	}
 
 	otherSK, otherPubKey := newKeyPair(t)
-	delegateeSK, _ := newKeyPair(t)
-	delegateePubKey, err := nostr.GetPublicKey(delegateeSK)
-	if err != nil {
-		t.Fatalf("GetPublicKey: %v", err)
-	}
+	delegateeSK, delegateePubKey := newKeyPair(t)
 
 	event := &nostr.Event{
 		Kind:      nostr.KindTextNote,
 		CreatedAt: nostr.Now(),
 		Content:   "delegated",
 		Tags: nostr.Tags{
-			{"delegation", otherPubKey, "", signDelegationToken(t, otherSK, delegateePubKey, "")},
-			{"delegation", otherPubKey, "kind=1", "not-a-signature"},
+			{"delegation", otherPubKey.Hex(), "", signDelegationToken(t, otherSK, delegateePubKey, "")},
+			{"delegation", otherPubKey.Hex(), "kind=1", "not-a-signature"},
 		},
 	}
 	if err := event.Sign(delegateeSK); err != nil {
@@ -164,25 +156,21 @@ func TestBannedAuthorFilterRejectsBannedDelegator(t *testing.T) {
 	}
 
 	delegatorSK, delegatorPubKey := newKeyPair(t)
-	delegateeSK, _ := newKeyPair(t)
+	delegateeSK, delegateePubKey := newKeyPair(t)
 
 	conditions := "kind=1"
-	delegateePubKey, err := nostr.GetPublicKey(delegateeSK)
-	if err != nil {
-		t.Fatalf("GetPublicKey: %v", err)
-	}
 	token := signDelegationToken(t, delegatorSK, delegateePubKey, conditions)
 	event := &nostr.Event{
 		Kind:      nostr.KindTextNote,
 		CreatedAt: nostr.Now(),
 		Content:   "delegated",
-		Tags:      nostr.Tags{{"delegation", delegatorPubKey, conditions, token}},
+		Tags:      nostr.Tags{{"delegation", delegatorPubKey.Hex(), conditions, token}},
 	}
 	if err := event.Sign(delegateeSK); err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
 
-	if err := s.BanAuthor(context.Background(), delegatorPubKey, time.Hour); err != nil {
+	if err := s.BanAuthor(context.Background(), delegatorPubKey.Hex(), time.Hour); err != nil {
 		t.Fatalf("BanAuthor: %v", err)
 	}
 

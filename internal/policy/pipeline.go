@@ -7,8 +7,8 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"fiatjaf.com/nostr"
 	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
-	"github.com/nbd-wtf/go-nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 )
@@ -64,16 +64,17 @@ func (p *Pipeline) ProcessEvent(
 	if event == nil {
 		return PolicyResponse{Action: "reject", Msg: "Event is missing."}, nil
 	}
+	eventID := event.ID.Hex()
 	if p.closed {
-		return PolicyResponse{ID: event.ID, Action: "reject", Msg: "The policy pipeline is shutting down."}, errPipelineClosed
+		return PolicyResponse{ID: eventID, Action: "reject", Msg: "The policy pipeline is shutting down."}, errPipelineClosed
 	}
 
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Panic recovered in filter pipeline",
-				"panic", r, "event_id", event.ID, "pubkey", event.PubKey, "stack", string(debug.Stack()),
+				"panic", r, "event_id", eventID, "pubkey", event.PubKey.Hex(), "stack", string(debug.Stack()),
 			)
-			response = PolicyResponse{ID: event.ID, Action: "reject", Msg: "An unexpected internal error occurred."}
+			response = PolicyResponse{ID: eventID, Action: "reject", Msg: "An unexpected internal error occurred."}
 			err = nil
 		}
 	}()
@@ -86,8 +87,8 @@ func (p *Pipeline) ProcessEvent(
 	for _, stage := range p.stages {
 		res, filterErr := stage.Filter.Match(ctx, event, meta)
 		if filterErr != nil {
-			slog.Error("Filter execution failed", "error", filterErr, "filter_name", res.Filter, "event_id", event.ID)
-			return PolicyResponse{ID: event.ID, Action: "reject", Msg: "An internal error occurred while running filter " + res.Filter + "."}, filterErr
+			slog.Error("Filter execution failed", "error", filterErr, "filter_name", res.Filter, "event_id", eventID)
+			return PolicyResponse{ID: eventID, Action: "reject", Msg: "An internal error occurred while running filter " + res.Filter + "."}, filterErr
 		}
 
 		if p.collector != nil {
@@ -98,9 +99,9 @@ func (p *Pipeline) ProcessEvent(
 			logAttrs := []slog.Attr{
 				slog.String("filter_name", res.Filter),
 				slog.String("remote_ip", remoteIP),
-				slog.String("event_id", event.ID),
-				slog.Int("kind", event.Kind),
-				slog.String("pubkey", event.PubKey),
+				slog.String("event_id", eventID),
+				slog.Int("kind", int(event.Kind)),
+				slog.String("pubkey", event.PubKey.Hex()),
 				slog.String("reason", res.Reason),
 			}
 			logLevel := slog.LevelWarn
@@ -111,19 +112,19 @@ func (p *Pipeline) ProcessEvent(
 
 			if dryRun {
 				slog.LogAttrs(ctx, slog.LevelInfo, "Dry-run: Event would be rejected", logAttrs...)
-				return PolicyResponse{ID: event.ID, Action: "accept"}, nil
+				return PolicyResponse{ID: eventID, Action: "accept"}, nil
 			}
 
 			for _, handler := range p.rejectionHandlers {
 				handler.HandleRejection(ctx, event, res.Filter)
 			}
 
-			return PolicyResponse{ID: event.ID, Action: "reject", Msg: res.Reason}, nil
+			return PolicyResponse{ID: eventID, Action: "reject", Msg: res.Reason}, nil
 		}
 	}
 
-	slog.Debug("Event accepted by all filters", "event_id", event.ID, "pubkey", event.PubKey)
-	return PolicyResponse{ID: event.ID, Action: "accept"}, nil
+	slog.Debug("Event accepted by all filters", "event_id", eventID, "pubkey", event.PubKey.Hex())
+	return PolicyResponse{ID: eventID, Action: "accept"}, nil
 }
 
 func (p *Pipeline) Close() error {

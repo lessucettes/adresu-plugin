@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -43,7 +43,7 @@ func (f *SizeFilter) Match(_ context.Context, event *nostr.Event, meta map[strin
 		maxSize = f.cfg.DefaultMaxSize
 	}
 
-	if rule, ok := f.kindToRule[event.Kind]; ok {
+	if rule, ok := f.kindToRule[int(event.Kind)]; ok {
 		maxSize = rule.MaxSize
 	}
 

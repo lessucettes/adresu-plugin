@@ -7,16 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/store"
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
 )
 
-func newModerationFilter(t *testing.T, moderatorPubKey, banEmoji, unbanEmoji string, s store.Store, sf *testStrfry) *ModerationFilter {
+func newModerationFilter(t *testing.T, moderatorPubKey nostr.PubKey, banEmoji, unbanEmoji string, s store.Store, sf *testStrfry) *ModerationFilter {
 	t.Helper()
 
-	filter, err := NewModerationFilter(moderatorPubKey, banEmoji, unbanEmoji, s, sf, 24*time.Hour)
+	filter, err := NewModerationFilter(moderatorPubKey.Hex(), banEmoji, unbanEmoji, s, sf, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("NewModerationFilter: %v", err)
 	}
@@ -30,7 +31,7 @@ func TestModerationFilterBansTargetAndDeletesEvents(t *testing.T) {
 	sf := &testStrfry{}
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, sf)
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	result, err := filter.Match(context.Background(), reaction, nil)
 	if err != nil {
 		t.Fatalf("Match: %v", err)
@@ -42,8 +43,8 @@ func TestModerationFilterBansTargetAndDeletesEvents(t *testing.T) {
 		t.Fatal("moderator ban was not applied")
 	}
 	waitFor(t, time.Second, func() bool { return sf.callCount() == 1 }, "event deletion was not triggered")
-	if got := sf.callAuthors(); got[0] != targetPubKey {
-		t.Fatalf("deleted author = %q, want %q", got[0], targetPubKey)
+	if got := sf.callAuthors(); got[0] != targetPubKey.Hex() {
+		t.Fatalf("deleted author = %q, want %q", got[0], targetPubKey.Hex())
 	}
 }
 
@@ -54,7 +55,7 @@ func TestModerationFilterSupportsBanOnlyConfiguration(t *testing.T) {
 	sf := &testStrfry{}
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "", s, sf)
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(context.Background(), reaction, nil); err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -70,10 +71,10 @@ func TestModerationFilterSupportsUnbanOnlyConfiguration(t *testing.T) {
 	s := newTestStore()
 	filter := newModerationFilter(t, moderatorPubKey, "", "🔓", s, &testStrfry{})
 
-	if err := s.BanAuthor(context.Background(), targetPubKey, time.Hour); err != nil {
+	if err := s.BanAuthor(context.Background(), targetPubKey.Hex(), time.Hour); err != nil {
 		t.Fatalf("BanAuthor: %v", err)
 	}
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(context.Background(), reaction, nil); err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestModerationFilterSupportsUnbanOnlyConfiguration(t *testing.T) {
 	}
 
 	// With no ban emoji configured, a reaction must not ban anyone.
-	banReaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	banReaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(context.Background(), banReaction, nil); err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -97,10 +98,10 @@ func TestModerationFilterUnbansTarget(t *testing.T) {
 	s := newTestStore()
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, &testStrfry{})
 
-	if err := s.BanAuthor(context.Background(), targetPubKey, time.Hour); err != nil {
+	if err := s.BanAuthor(context.Background(), targetPubKey.Hex(), time.Hour); err != nil {
 		t.Fatalf("BanAuthor: %v", err)
 	}
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(context.Background(), reaction, nil); err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -118,8 +119,10 @@ func TestModerationFilterRejectsForgedModeratorEvent(t *testing.T) {
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, sf)
 
 	// An attacker signs an event and claims the moderator's pubkey.
-	reaction := signedEvent(t, attackerSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, attackerSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	reaction.PubKey = moderatorPubKey
+	// Reach signature verification instead of failing the earlier ID check.
+	reaction.ID = nip.CanonicalEventID(context.Background(), reaction)
 
 	result, err := filter.Match(context.Background(), reaction, nil)
 	if err != nil {
@@ -143,7 +146,7 @@ func TestModerationFilterDryRunSkipsSideEffects(t *testing.T) {
 	sf := &testStrfry{}
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, sf)
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	result, err := filter.Match(context.Background(), reaction, map[string]any{"dry_run": true})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
@@ -165,12 +168,12 @@ func TestModerationFilterIgnoresEmptyEmoji(t *testing.T) {
 	s := newTestStore()
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "", s, &testStrfry{})
 
-	if err := s.BanAuthor(context.Background(), targetPubKey, time.Hour); err != nil {
+	if err := s.BanAuthor(context.Background(), targetPubKey.Hex(), time.Hour); err != nil {
 		t.Fatalf("BanAuthor: %v", err)
 	}
 
 	// An empty reaction content must not match an unset unban emoji.
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(context.Background(), reaction, nil); err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -186,7 +189,7 @@ func TestModerationFilterIgnoresNonModerator(t *testing.T) {
 	s := newTestStore()
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, &testStrfry{})
 
-	reaction := signedEvent(t, otherSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, otherSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	result, err := filter.Match(context.Background(), reaction, nil)
 	if err != nil {
 		t.Fatalf("Match: %v", err)
@@ -201,7 +204,7 @@ func TestModerationFilterSkipsInvalidTarget(t *testing.T) {
 	s := newTestStore()
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, &testStrfry{})
 
-	for _, target := range []string{"", "not-a-pubkey", moderatorPubKey} {
+	for _, target := range []string{"", "not-a-pubkey", moderatorPubKey.Hex()} {
 		reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", target}})
 		result, err := filter.Match(context.Background(), reaction, nil)
 		if err != nil {
@@ -220,7 +223,7 @@ func TestModerationFilterPropagatesBanFailure(t *testing.T) {
 	s.applyErr = errors.New("database unavailable")
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, &testStrfry{})
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(context.Background(), reaction, nil); !errors.Is(err, s.applyErr) {
 		t.Fatalf("Match error = %v, want %v", err, s.applyErr)
 	}
@@ -234,7 +237,7 @@ func TestModerationFilterAppliesEachReactionOnce(t *testing.T) {
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, sf)
 	ctx := context.Background()
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 
 	// strfry's mesh paths (router/stream/sync) run the write policy before the
 	// local duplicate check, so the same stored reaction can reach the plugin
@@ -283,8 +286,8 @@ func TestModerationFilterDoesNotRevertUnbanOnReplay(t *testing.T) {
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, &testStrfry{})
 	ctx := context.Background()
 
-	ban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
-	unban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey}})
+	ban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
+	unban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(ctx, ban, nil); err != nil {
 		t.Fatalf("Match ban: %v", err)
 	}
@@ -315,7 +318,7 @@ func TestModerationFilterRetriesAfterBanFailure(t *testing.T) {
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, &testStrfry{})
 	ctx := context.Background()
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := filter.Match(ctx, reaction, nil); err == nil {
 		t.Fatal("Match hid the ban failure")
 	}
@@ -356,7 +359,7 @@ func TestModerationFilterBansAreVisibleToBannedAuthorFilter(t *testing.T) {
 		t.Fatalf("prime Match = %+v, %v; want allowed", result, err)
 	}
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	if _, err := moderationFilter.Match(ctx, reaction, nil); err != nil {
 		t.Fatalf("moderation Match: %v", err)
 	}
@@ -375,15 +378,17 @@ func TestModerationFilterMatchesUppercaseSignedAuthorAndTarget(t *testing.T) {
 	_, targetPubKey := newKeyPair(t)
 	s := newTestStore()
 	sf := &testStrfry{}
-	filter := newModerationFilter(t, strings.ToLower(moderatorPubKey), "🔨", "🔓", s, sf)
+	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, sf)
 
-	// Signatures cover the exact pubkey spelling, so the event must be signed
-	// independently after choosing uppercase hex for both the author and target.
-	// evt.Sign would reset PubKey and hide the case-sensitivity bug.
-	reaction := signedEventWithPubkey(t, moderatorSK, strings.ToUpper(moderatorPubKey), nostr.KindReaction, "🔨",
-		nostr.Tags{{"p", strings.ToUpper(targetPubKey)}})
+	// strfry hashes the pubkey string from the raw event JSON, so an uppercase
+	// spelling is a valid signed body. The typed event keeps the same key bytes;
+	// the wire spelling travels alongside it in the request context.
+	wirePubKey := strings.ToUpper(moderatorPubKey.Hex())
+	reaction := signedEventWithWirePubKey(t, moderatorSK, wirePubKey, nostr.KindReaction, "🔨",
+		nostr.Tags{{"p", strings.ToUpper(targetPubKey.Hex())}})
+	ctx := nip.WithWirePubKey(context.Background(), reaction, wirePubKey)
 
-	result, err := filter.Match(context.Background(), reaction, nil)
+	result, err := filter.Match(ctx, reaction, nil)
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -394,8 +399,8 @@ func TestModerationFilterMatchesUppercaseSignedAuthorAndTarget(t *testing.T) {
 		t.Fatal("uppercase target was not normalized before the ban was stored")
 	}
 	waitFor(t, time.Second, func() bool { return sf.callCount() == 1 }, "uppercase target did not trigger event deletion")
-	if got := sf.callAuthors(); got[0] != targetPubKey {
-		t.Fatalf("deleted author = %q, want normalized %q", got[0], targetPubKey)
+	if got := sf.callAuthors(); got[0] != targetPubKey.Hex() {
+		t.Fatalf("deleted author = %q, want normalized %q", got[0], targetPubKey.Hex())
 	}
 }
 
@@ -405,10 +410,12 @@ func TestModerationFilterSkipsUppercaseSelfTarget(t *testing.T) {
 	sf := &testStrfry{}
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", s, sf)
 
-	reaction := signedEventWithPubkey(t, moderatorSK, strings.ToUpper(moderatorPubKey), nostr.KindReaction, "🔨",
-		nostr.Tags{{"p", strings.ToUpper(moderatorPubKey)}})
+	wirePubKey := strings.ToUpper(moderatorPubKey.Hex())
+	reaction := signedEventWithWirePubKey(t, moderatorSK, wirePubKey, nostr.KindReaction, "🔨",
+		nostr.Tags{{"p", wirePubKey}})
+	ctx := nip.WithWirePubKey(context.Background(), reaction, wirePubKey)
 
-	result, err := filter.Match(context.Background(), reaction, nil)
+	result, err := filter.Match(ctx, reaction, nil)
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -445,8 +452,8 @@ func TestModerationReplayPersistsAcrossFilterRecreationAndStoreReopen(t *testing
 	ctx := context.Background()
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", db, sf)
 
-	ban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
-	unban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey}})
+	ban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
+	unban := signedEvent(t, moderatorSK, nostr.KindReaction, "🔓", nostr.Tags{{"p", targetPubKey.Hex()}})
 
 	if _, err := filter.Match(ctx, ban, nil); err != nil {
 		t.Fatalf("Match ban: %v", err)
@@ -458,7 +465,7 @@ func TestModerationReplayPersistsAcrossFilterRecreationAndStoreReopen(t *testing
 	if err := filter.Close(); err != nil {
 		t.Fatalf("Close first filter: %v", err)
 	}
-	if banned, err := db.IsAuthorBanned(ctx, targetPubKey); err != nil {
+	if banned, err := db.IsAuthorBanned(ctx, targetPubKey.Hex()); err != nil {
 		t.Fatalf("IsAuthorBanned: %v", err)
 	} else if banned {
 		t.Fatal("unban did not apply")
@@ -473,7 +480,7 @@ func TestModerationReplayPersistsAcrossFilterRecreationAndStoreReopen(t *testing
 	if err := filter.Close(); err != nil {
 		t.Fatalf("Close recreated filter: %v", err)
 	}
-	if banned, err := db.IsAuthorBanned(ctx, targetPubKey); err != nil {
+	if banned, err := db.IsAuthorBanned(ctx, targetPubKey.Hex()); err != nil {
 		t.Fatalf("IsAuthorBanned after replay: %v", err)
 	} else if banned {
 		t.Fatal("a replayed ban reaction re-banned the author after filter recreation")
@@ -497,7 +504,7 @@ func TestModerationReplayPersistsAcrossFilterRecreationAndStoreReopen(t *testing
 	if err := filter.Close(); err != nil {
 		t.Fatalf("Close filter after reopen: %v", err)
 	}
-	if banned, err := db.IsAuthorBanned(ctx, targetPubKey); err != nil {
+	if banned, err := db.IsAuthorBanned(ctx, targetPubKey.Hex()); err != nil {
 		t.Fatalf("IsAuthorBanned after reopen: %v", err)
 	} else if banned {
 		t.Fatal("a replayed ban reaction re-banned the author after store reopen")
@@ -507,7 +514,7 @@ func TestModerationReplayPersistsAcrossFilterRecreationAndStoreReopen(t *testing
 	}
 
 	// A distinct moderation event must still be applied after the replays.
-	distinct := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	distinct := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	distinct.CreatedAt = ban.CreatedAt + 1
 	if err := distinct.Sign(moderatorSK); err != nil {
 		t.Fatalf("Sign distinct action: %v", err)
@@ -518,7 +525,7 @@ func TestModerationReplayPersistsAcrossFilterRecreationAndStoreReopen(t *testing
 	if err := filter.Close(); err != nil {
 		t.Fatalf("Close filter after distinct action: %v", err)
 	}
-	if banned, err := db.IsAuthorBanned(ctx, targetPubKey); err != nil {
+	if banned, err := db.IsAuthorBanned(ctx, targetPubKey.Hex()); err != nil {
 		t.Fatalf("IsAuthorBanned after distinct action: %v", err)
 	} else if !banned {
 		t.Fatal("a distinct moderation action was not applied")
@@ -544,13 +551,13 @@ func TestModerationActionRetriesAfterCanceledStoreTransaction(t *testing.T) {
 	filter := newModerationFilter(t, moderatorPubKey, "🔨", "🔓", db, sf)
 	ctx := context.Background()
 
-	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey}})
+	reaction := signedEvent(t, moderatorSK, nostr.KindReaction, "🔨", nostr.Tags{{"p", targetPubKey.Hex()}})
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err := filter.Match(canceled, reaction, nil); err == nil {
 		t.Fatal("Match hid a failed store transaction")
 	}
-	if banned, err := db.IsAuthorBanned(ctx, targetPubKey); err != nil {
+	if banned, err := db.IsAuthorBanned(ctx, targetPubKey.Hex()); err != nil {
 		t.Fatalf("IsAuthorBanned after failure: %v", err)
 	} else if banned {
 		t.Fatal("failed transaction applied a partial ban")
@@ -566,7 +573,7 @@ func TestModerationActionRetriesAfterCanceledStoreTransaction(t *testing.T) {
 	if err := filter.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if banned, err := db.IsAuthorBanned(ctx, targetPubKey); err != nil {
+	if banned, err := db.IsAuthorBanned(ctx, targetPubKey.Hex()); err != nil {
 		t.Fatalf("IsAuthorBanned after retry: %v", err)
 	} else if !banned {
 		t.Fatal("retry after a failed transaction did not apply the ban")

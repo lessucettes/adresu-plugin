@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,12 +13,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"fiatjaf.com/nostr"
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
 	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
-	"github.com/nbd-wtf/go-nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/policy"
@@ -30,11 +33,67 @@ var version = "dev"
 const maxPolicyResponseSize = 8 << 10 // strfry's plugin output record limit.
 
 type PolicyInput struct {
-	Type       string      `json:"type,omitempty"`
-	Event      nostr.Event `json:"event"`
-	SourceType string      `json:"sourceType,omitempty"`
-	SourceInfo string      `json:"sourceInfo,omitempty"`
-	IP         string      `json:"ip,omitempty"`
+	Type        string      `json:"type,omitempty"`
+	Event       nostr.Event `json:"event"`
+	SourceType  string      `json:"sourceType,omitempty"`
+	SourceInfo  string      `json:"sourceInfo,omitempty"`
+	IP          string      `json:"ip,omitempty"`
+	eventID     string
+	eventPubKey string
+}
+
+// UnmarshalJSON validates the wire fields before converting to binary types.
+// The upstream Event decoder silently ignores invalid hex and truncates kinds.
+func (p *PolicyInput) UnmarshalJSON(data []byte) error {
+	type input PolicyInput
+	var envelope struct {
+		*input
+		Event json.RawMessage `json:"event"`
+	}
+	envelope.input = (*input)(p)
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	var event struct {
+		ID        string          `json:"id"`
+		PubKey    string          `json:"pubkey"`
+		CreatedAt nostr.Timestamp `json:"created_at"`
+		Kind      uint16          `json:"kind"`
+		Tags      nostr.Tags      `json:"tags"`
+		Content   string          `json:"content"`
+		Sig       string          `json:"sig"`
+	}
+	if err := json.Unmarshal(envelope.Event, &event); err != nil {
+		return err
+	}
+	if !nostr.IsValid32ByteHex(strings.ToLower(event.ID)) {
+		return errors.New("invalid event ID: expected 64 hex characters")
+	}
+	id, err := nostr.IDFromHex(event.ID)
+	if err != nil {
+		return fmt.Errorf("invalid event ID: %w", err)
+	}
+	if !nostr.IsValid32ByteHex(strings.ToLower(event.PubKey)) {
+		return errors.New("invalid event pubkey: expected 64 hex characters")
+	}
+	pubkey, err := nostr.PubKeyFromHex(event.PubKey)
+	if err != nil {
+		return fmt.Errorf("invalid event pubkey: %w", err)
+	}
+	var sig [64]byte
+	if len(event.Sig) != hex.EncodedLen(len(sig)) {
+		return errors.New("invalid event signature length")
+	}
+	if _, err := hex.Decode(sig[:], []byte(event.Sig)); err != nil {
+		return fmt.Errorf("invalid event signature: %w", err)
+	}
+	p.Event = nostr.Event{
+		ID: id, PubKey: pubkey, CreatedAt: event.CreatedAt,
+		Kind: nostr.Kind(event.Kind), Tags: event.Tags, Content: event.Content, Sig: sig,
+	}
+	p.eventID = event.ID
+	p.eventPubKey = event.PubKey
+	return nil
 }
 
 var (
@@ -292,7 +351,7 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 				}
 				slog.Warn("Failed to decode policy input JSON", "error", decodeError,
 					"raw_line_prefix", string(line[:min(len(line), 1024)]))
-				// strfry accepts some event shapes that go-nostr cannot decode
+				// strfry accepts some event shapes that nostr.Event cannot decode
 				// (for example, non-string tag extensions). Reply using the ID
 				// decoded independently, or strfry waits until its plugin timeout.
 				var envelope struct {
@@ -324,10 +383,13 @@ func processEvents(ctx context.Context, r io.Reader, w io.Writer, dryRun bool) e
 			pipelineMutex.RLock()
 			p := currentPipeline
 
-			result, err := p.ProcessEvent(ctx, &input.Event, remoteIP, dryRun)
+			eventCtx := nip.WithWirePubKey(ctx, &input.Event, input.eventPubKey)
+			result, err := p.ProcessEvent(eventCtx, &input.Event, remoteIP, dryRun)
 			pipelineMutex.RUnlock()
+			// Correlate with strfry's exact input spelling, including uppercase hex.
+			result.ID = input.eventID
 			if err != nil {
-				slog.Error("Error processing event", "event_id", input.Event.ID, "error", err)
+				slog.Error("Error processing event", "event_id", input.eventID, "error", err)
 			}
 
 			// Long configured patterns can produce reasons beyond strfry's

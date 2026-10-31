@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -55,7 +55,7 @@ func (f *FreshnessFilter) Match(_ context.Context, event *nostr.Event, meta map[
 		maxPast, maxFuture = f.cfg.DefaultMaxPast, f.cfg.DefaultMaxFuture
 	}
 
-	if limits, ok := f.rulesByKind[event.Kind]; ok {
+	if limits, ok := f.rulesByKind[int(event.Kind)]; ok {
 		maxPast = limits.MaxPast
 		maxFuture = limits.MaxFuture
 	}

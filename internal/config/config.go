@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"fiatjaf.com/nostr"
 	"github.com/BurntSushi/toml"
 	kitconfig "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
-	"github.com/nbd-wtf/go-nostr"
 )
 
 type Config struct {
@@ -115,10 +115,13 @@ func isFinite(value float64) bool {
 }
 
 // isHexPubKey reports whether s encodes a valid Schnorr public key in hex.
-// Moderation lowercases the configured key before comparing it with event
-// pubkeys, so uppercase hex is accepted here as well.
+// Moderation compares decoded key bytes, so uppercase hex is accepted too.
 func isHexPubKey(s string) bool {
-	return nostr.IsValidPublicKey(strings.ToLower(s))
+	if !nostr.IsValid32ByteHex(strings.ToLower(s)) {
+		return false
+	}
+	_, err := nostr.PubKeyFromHex(s)
+	return err == nil
 }
 
 // undecodedKeyNames returns the dotted names of TOML keys that did not map to

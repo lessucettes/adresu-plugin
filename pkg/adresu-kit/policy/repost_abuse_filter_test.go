@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -27,9 +27,9 @@ func newRepostAbuseFilter(t *testing.T) *RepostAbuseFilter {
 	return filter
 }
 
-func repostMatch(t *testing.T, filter *RepostAbuseFilter, kind int) bool {
+func repostMatch(t *testing.T, filter *RepostAbuseFilter, kind nostr.Kind) bool {
 	t.Helper()
-	res, err := filter.Match(context.Background(), &nostr.Event{Kind: kind, PubKey: "pk-1", Content: "content"}, nil)
+	res, err := filter.Match(context.Background(), &nostr.Event{Kind: kind, PubKey: fixturePubKey(1), Content: "content"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

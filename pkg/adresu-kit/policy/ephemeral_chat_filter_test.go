@@ -3,11 +3,10 @@ package policy
 import (
 	"context"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -41,7 +40,7 @@ func ephemeralChatConfig() *config.EphemeralChatFilterConfig {
 func TestEphemeralChatRateLimitAcceptsPoW(t *testing.T) {
 	filter := newEphemeralChatFilter(t, ephemeralChatConfig())
 
-	event := &nostr.Event{Kind: ephemeralChatKind, PubKey: "pk-1", Content: "hello"}
+	event := &nostr.Event{Kind: ephemeralChatKind, PubKey: fixturePubKey(1), Content: "hello"}
 	if res, err := filter.Match(context.Background(), event, nil); err != nil || !res.Allowed {
 		t.Fatalf("first message = (%v, %v), want allowed", res, err)
 	}
@@ -62,14 +61,14 @@ func ephemeralPoWEvent(t *testing.T) *nostr.Event {
 
 	event := &nostr.Event{
 		Kind:    ephemeralChatKind,
-		PubKey:  "pk-1",
+		PubKey:  fixturePubKey(1),
 		Content: "hello",
 		Tags:    nostr.Tags{{"nonce", "0", "8"}},
 	}
 	for nonce := 0; nonce < 100000; nonce++ {
 		event.Tags[0][1] = strconv.Itoa(nonce)
 		id := event.GetID()
-		if strings.HasPrefix(id, "00") {
+		if id[0] == 0 {
 			event.ID = id
 			return event
 		}
@@ -98,7 +97,7 @@ func TestEphemeralChatContentThresholds(t *testing.T) {
 			cfg.MinLettersForCapsCheck = tc.minLetters
 			cfg.MaxRepeatChars = tc.repeats
 			f := newEphemeralChatFilter(t, cfg)
-			res, err := f.Match(context.Background(), &nostr.Event{Kind: ephemeralChatKind, PubKey: "author", Content: tc.content}, nil)
+			res, err := f.Match(context.Background(), &nostr.Event{Kind: ephemeralChatKind, PubKey: fixturePubKey(2), Content: tc.content}, nil)
 			if err != nil || res.Allowed != tc.allowed {
 				t.Fatalf("Allowed=%v error=%v, want Allowed=%v (reason: %s)", res.Allowed, err, tc.allowed, res.Reason)
 			}
@@ -112,7 +111,7 @@ func TestEphemeralChatMinDelay(t *testing.T) {
 	cfg.RateLimitBurst = 10
 	filter := newEphemeralChatFilter(t, cfg)
 
-	event := &nostr.Event{Kind: ephemeralChatKind, PubKey: "pk-1", Content: "hello"}
+	event := &nostr.Event{Kind: ephemeralChatKind, PubKey: fixturePubKey(1), Content: "hello"}
 	if res, err := filter.Match(context.Background(), event, nil); err != nil || !res.Allowed {
 		t.Fatalf("first message = (%v, %v), want allowed", res, err)
 	}

@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
 
-func emergencyMatch(t *testing.T, filter *EmergencyFilter, pubkey, remoteIP string) bool {
+func emergencyMatch(t *testing.T, filter *EmergencyFilter, pubkey nostr.PubKey, remoteIP string) bool {
 	t.Helper()
 	res, err := filter.Match(context.Background(), &nostr.Event{Kind: nostr.KindTextNote, PubKey: pubkey}, map[string]any{"remote_ip": remoteIP})
 	if err != nil {
@@ -32,13 +32,13 @@ func TestEmergencyFilterLimitsNewPubKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !emergencyMatch(t, filter, "pk-1", "") || !emergencyMatch(t, filter, "pk-2", "") {
+	if !emergencyMatch(t, filter, fixturePubKey(1), "") || !emergencyMatch(t, filter, fixturePubKey(2), "") {
 		t.Fatal("new pubkeys within the burst were rejected")
 	}
-	if emergencyMatch(t, filter, "pk-3", "") {
+	if emergencyMatch(t, filter, fixturePubKey(3), "") {
 		t.Fatal("new pubkey above the burst was allowed")
 	}
-	if !emergencyMatch(t, filter, "pk-1", "") {
+	if !emergencyMatch(t, filter, fixturePubKey(1), "") {
 		t.Fatal("recently seen pubkey was counted as new again")
 	}
 }
@@ -62,13 +62,13 @@ func TestEmergencyFilterLimitsPerIP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !emergencyMatch(t, filter, "pk-a", "198.51.100.7") {
+	if !emergencyMatch(t, filter, fixturePubKey(0x0a), "198.51.100.7") {
 		t.Fatal("first new pubkey from an IP was rejected")
 	}
-	if emergencyMatch(t, filter, "pk-b", "198.51.100.7") {
+	if emergencyMatch(t, filter, fixturePubKey(0x0b), "198.51.100.7") {
 		t.Fatal("second new pubkey from the same IP was allowed")
 	}
-	if !emergencyMatch(t, filter, "pk-c", "198.51.100.8") {
+	if !emergencyMatch(t, filter, fixturePubKey(0x0c), "198.51.100.8") {
 		t.Fatal("new pubkey from another IP was rejected")
 	}
 }

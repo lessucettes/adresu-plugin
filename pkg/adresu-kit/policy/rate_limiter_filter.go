@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 	"golang.org/x/time/rate"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
@@ -23,11 +23,20 @@ type processedRateRule struct {
 	id   string
 }
 
+// limiterKey identifies one limiter bucket: a rule plus either an IP address or
+// an author. Both identities stay typed, so an IP can never collide with a
+// pubkey and a binary author key needs no hex conversion.
+type limiterKey struct {
+	ruleID string
+	ip     string
+	pubkey nostr.PubKey
+}
+
 type RateLimiterFilter struct {
 	mu         sync.Mutex
 	cfg        *config.RateLimiterConfig
 	by         config.RateLimiterBy
-	limiters   *cache.LRU[string, *rate.Limiter]
+	limiters   *cache.LRU[limiterKey, *rate.Limiter]
 	kindToRule map[int]processedRateRule
 }
 
@@ -48,7 +57,7 @@ func NewRateLimiterFilter(cfg *config.RateLimiterConfig) (*RateLimiterFilter, er
 		by = config.RateByBoth
 	}
 
-	limiters := cache.NewLRU[string, *rate.Limiter](size, ttl)
+	limiters := cache.NewLRU[limiterKey, *rate.Limiter](size, ttl)
 	kindMap := make(map[int]processedRateRule, len(cfg.Rules))
 
 	for i := range cfg.Rules {
@@ -86,7 +95,7 @@ func (f *RateLimiterFilter) Match(_ context.Context, event *nostr.Event, meta ma
 	var ruleID string
 	var ruleDescription string
 
-	if processed, exists := f.kindToRule[event.Kind]; exists {
+	if processed, exists := f.kindToRule[int(event.Kind)]; exists {
 		currentRate = processed.rule.Rate
 		currentBurst = processed.rule.Burst
 		ruleID = processed.id
@@ -102,31 +111,30 @@ func (f *RateLimiterFilter) Match(_ context.Context, event *nostr.Event, meta ma
 		return newResult(true, "Publishing rate is unlimited for this event kind.", nil)
 	}
 
-	userKeys := make([]string, 0, 2)
+	userKeys := make([]limiterKey, 0, 2)
 	remoteIP, _ := meta["remote_ip"].(string)
 	pubkey := authorKey(event)
 
 	switch f.by {
 	case config.RateByIP:
 		if remoteIP != "" {
-			userKeys = append(userKeys, "ip:"+remoteIP)
+			userKeys = append(userKeys, limiterKey{ruleID: ruleID, ip: remoteIP})
 		}
 	case config.RateByPubKey:
-		if pubkey != "" {
-			userKeys = append(userKeys, "pk:"+pubkey)
+		if pubkey != nostr.ZeroPK {
+			userKeys = append(userKeys, limiterKey{ruleID: ruleID, pubkey: pubkey})
 		}
 	case config.RateByBoth:
 		if remoteIP != "" {
-			userKeys = append(userKeys, "ip:"+remoteIP)
+			userKeys = append(userKeys, limiterKey{ruleID: ruleID, ip: remoteIP})
 		}
-		if pubkey != "" {
-			userKeys = append(userKeys, "pk:"+pubkey)
+		if pubkey != nostr.ZeroPK {
+			userKeys = append(userKeys, limiterKey{ruleID: ruleID, pubkey: pubkey})
 		}
 	}
 
 	for _, userKey := range userKeys {
-		cacheKey := fmt.Sprintf("%s:%s", ruleID, userKey)
-		limiter := f.getLimiter(cacheKey, currentRate, currentBurst)
+		limiter := f.getLimiter(userKey, currentRate, currentBurst)
 		if !limiter.Allow() {
 			reason := fmt.Sprintf("Publishing rate limit exceeded for rule %q.", ruleDescription)
 			return newResult(false, reason, nil)
@@ -135,7 +143,7 @@ func (f *RateLimiterFilter) Match(_ context.Context, event *nostr.Event, meta ma
 	return newResult(true, "Publishing rate is within the allowed limit.", nil)
 }
 
-func (f *RateLimiterFilter) getLimiter(key string, r float64, b int) *rate.Limiter {
+func (f *RateLimiterFilter) getLimiter(key limiterKey, r float64, b int) *rate.Limiter {
 	if limiter, ok := f.limiters.Get(key); ok {
 		f.limiters.Add(key, limiter)
 		return limiter

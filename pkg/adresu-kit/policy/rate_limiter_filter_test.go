@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -21,7 +21,7 @@ func newRateLimiterFilter(t *testing.T, by config.RateLimiterBy) *RateLimiterFil
 		DefaultBurst: 1000,
 		Rules: []config.RateLimitRule{{
 			Description: "notes",
-			Kinds:       []int{nostr.KindTextNote},
+			Kinds:       []int{int(nostr.KindTextNote)},
 			Rate:        0.000001,
 			Burst:       2,
 		}},
@@ -32,7 +32,7 @@ func newRateLimiterFilter(t *testing.T, by config.RateLimiterBy) *RateLimiterFil
 	return filter
 }
 
-func rateLimitedMatch(t *testing.T, filter *RateLimiterFilter, pubkey, remoteIP string) bool {
+func rateLimitedMatch(t *testing.T, filter *RateLimiterFilter, pubkey nostr.PubKey, remoteIP string) bool {
 	t.Helper()
 	res, err := filter.Match(context.Background(), &nostr.Event{Kind: nostr.KindTextNote, PubKey: pubkey}, map[string]any{"remote_ip": remoteIP})
 	if err != nil {
@@ -45,14 +45,14 @@ func TestRateLimiterEnforcesBurstPerPubKey(t *testing.T) {
 	filter := newRateLimiterFilter(t, config.RateByPubKey)
 
 	for i := 0; i < 2; i++ {
-		if !rateLimitedMatch(t, filter, "pk-1", "") {
+		if !rateLimitedMatch(t, filter, fixturePubKey(1), "") {
 			t.Fatalf("event %d was limited before the burst was exhausted", i+1)
 		}
 	}
-	if rateLimitedMatch(t, filter, "pk-1", "") {
+	if rateLimitedMatch(t, filter, fixturePubKey(1), "") {
 		t.Fatal("event above the burst was allowed")
 	}
-	if !rateLimitedMatch(t, filter, "pk-2", "") {
+	if !rateLimitedMatch(t, filter, fixturePubKey(2), "") {
 		t.Fatal("a different pubkey shares the same limiter")
 	}
 }
@@ -62,11 +62,11 @@ func TestRateLimiterWithOmittedByStillLimits(t *testing.T) {
 	filter := newRateLimiterFilter(t, "")
 
 	for i := 0; i < 2; i++ {
-		if !rateLimitedMatch(t, filter, "pk-1", "203.0.113.1") {
+		if !rateLimitedMatch(t, filter, fixturePubKey(1), "203.0.113.1") {
 			t.Fatalf("event %d was limited before the burst was exhausted", i+1)
 		}
 	}
-	if rateLimitedMatch(t, filter, "pk-1", "203.0.113.1") {
+	if rateLimitedMatch(t, filter, fixturePubKey(1), "203.0.113.1") {
 		t.Fatal("enabled rate limiter with an empty by setting did not limit anything")
 	}
 }
@@ -83,7 +83,7 @@ func TestRateLimiterZeroRateIsUnlimited(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		if !rateLimitedMatch(t, filter, "pk-1", "") {
+		if !rateLimitedMatch(t, filter, fixturePubKey(1), "") {
 			t.Fatal("zero rate must mean unlimited")
 		}
 	}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"maps"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
 )
@@ -53,7 +53,7 @@ func NewTagsFilter(cfg *config.TagsFilterConfig) (*TagsFilter, error) {
 func (f *TagsFilter) Match(_ context.Context, event *nostr.Event, meta map[string]any) (FilterResult, error) {
 	newResult := NewResultFunc(tagsFilterName)
 
-	processedRule, exists := f.kindToRule[event.Kind]
+	processedRule, exists := f.kindToRule[int(event.Kind)]
 	if !exists {
 		return newResult(true, "No rules apply to this event kind.", nil)
 	}

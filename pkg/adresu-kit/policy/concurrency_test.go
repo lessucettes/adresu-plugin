@@ -2,14 +2,14 @@ package policy
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"fiatjaf.com/nostr"
+
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
-	"github.com/nbd-wtf/go-nostr"
 )
 
 func TestConcurrentRateAdmission(t *testing.T) {
@@ -51,9 +51,9 @@ func TestConcurrentRateAdmission(t *testing.T) {
 					go func(i int) {
 						defer wg.Done()
 						<-start
-						pubkey := "same-author"
+						pubkey := fixturePubKey(1)
 						if name == "emergency_ip" {
-							pubkey = fmt.Sprintf("author-%d", i)
+							pubkey = fixturePubKey(byte(i + 1))
 						}
 						res, err := filter.Match(context.Background(), &nostr.Event{Kind: ephemeralChatKind, PubKey: pubkey}, map[string]any{"remote_ip": "127.0.0.1"})
 						if err != nil {

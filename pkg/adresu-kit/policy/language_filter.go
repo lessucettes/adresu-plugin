@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 	"github.com/pemistahl/lingua-go"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
@@ -38,7 +38,7 @@ type LanguageFilter struct {
 	detector          lingua.LanguageDetector
 	allowedLangs      map[lingua.Language]struct{}
 	allowedKinds      map[int]struct{}
-	approvedCache     *cache.LRU[string, struct{}]
+	approvedCache     *cache.LRU[nostr.PubKey, struct{}]
 	thresholds        map[lingua.Language]map[lingua.Language]float64
 	defaultThresholds map[lingua.Language]float64
 }
@@ -91,9 +91,9 @@ func NewLanguageFilter(cfg *config.LanguageFilterConfig, detector lingua.Languag
 		}
 	}
 
-	var cacheStore *cache.LRU[string, struct{}]
+	var cacheStore *cache.LRU[nostr.PubKey, struct{}]
 	if cfg.ApprovedCacheTTL > 0 && cfg.ApprovedCacheSize > 0 {
-		cacheStore = cache.NewLRU[string, struct{}](cfg.ApprovedCacheSize, cfg.ApprovedCacheTTL)
+		cacheStore = cache.NewLRU[nostr.PubKey, struct{}](cfg.ApprovedCacheSize, cfg.ApprovedCacheTTL)
 	}
 
 	filter := &LanguageFilter{
@@ -115,7 +115,7 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 	if !f.cfg.Enabled || len(f.allowedLangs) == 0 {
 		return newResult(true, "Filter is disabled.", nil)
 	}
-	if _, ok := f.allowedKinds[event.Kind]; !ok {
+	if _, ok := f.allowedKinds[int(event.Kind)]; !ok {
 		return newResult(true, "Language check does not apply to this event kind.", nil)
 	}
 	if f.cfg.MinLengthForCheck > 0 && len(event.Content) < f.cfg.MinLengthForCheck {

@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
+
+	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 )
@@ -34,7 +36,7 @@ func TestAutoBanIgnoresForgedAuthor(t *testing.T) {
 	_, victim := newKeyPair(t)
 	forged := signedEvent(t, sk, nostr.KindReaction, "spam", nil)
 	forged.PubKey = victim
-	forged.ID = forged.GetID() // Valid body hash, but no signature from the victim.
+	forged.ID = nip.CanonicalEventID(context.Background(), forged) // Valid body hash, but no signature from the victim.
 	filter.HandleRejection(context.Background(), forged, "ModerationFilter")
 	if err := filter.Close(); err != nil {
 		t.Fatal(err)
@@ -54,12 +56,10 @@ func TestAutoBanIgnoresReplayedRejections(t *testing.T) {
 	event := signedEvent(t, sk, nostr.KindTextNote, "rejected elsewhere", nil)
 	filter.HandleRejection(context.Background(), event, "SizeFilter")
 	filter.HandleRejection(context.Background(), event, "SizeFilter")
-	caseVariant := *event
-	caseVariant.ID = strings.ToUpper(event.ID)
-	filter.HandleRejection(context.Background(), &caseVariant, "SizeFilter")
-	// CheckSignature verifies the body, not ID: changing ID must not defeat deduplication.
+	// The signature verifies the body, not the ID: changing ID must not defeat
+	// deduplication or let the event contribute another strike.
 	forgedID := *event
-	forgedID.ID = "0000000000000000000000000000000000000000000000000000000000000000"
+	forgedID.ID = nostr.ZeroID
 	filter.HandleRejection(context.Background(), &forgedID, "SizeFilter")
 	if err := filter.Close(); err != nil {
 		t.Fatal(err)
@@ -115,20 +115,40 @@ func TestAutoBanRequiresConfiguredStrikes(t *testing.T) {
 	}
 	sk, _ := newKeyPair(t)
 	event := signedEvent(t, sk, nostr.KindTextNote, "spam", nil)
-	// strfry compares decoded ID bytes, so uppercase hex is equally valid.
-	event.ID = strings.ToUpper(event.ID)
 	filter.HandleRejection(context.Background(), event, "SizeFilter")
 	if s.banCount() != 0 {
 		t.Fatal("author was banned before reaching max strikes")
 	}
 	second := signedEvent(t, sk, nostr.KindTextNote, "different spam", nil)
-	second.ID = strings.ToUpper(second.ID)
 	filter.HandleRejection(context.Background(), second, "SizeFilter")
 	if err := filter.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if s.banCount() != 1 {
 		t.Fatal("author was not banned after reaching max strikes")
+	}
+}
+
+func TestAutoBanCountsUppercaseSignedEvent(t *testing.T) {
+	s := newTestStore()
+	filter, err := NewAutoBanFilter(s, newAutoBanConfig(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk, pubkey := newKeyPair(t)
+	wirePubKey := strings.ToUpper(pubkey.Hex())
+
+	first := signedEventWithWirePubKey(t, sk, wirePubKey, nostr.KindTextNote, "spam", nil)
+	filter.HandleRejection(nip.WithWirePubKey(context.Background(), first, wirePubKey), first, "SizeFilter")
+
+	second := signedEventWithWirePubKey(t, sk, wirePubKey, nostr.KindTextNote, "different spam", nil)
+	filter.HandleRejection(nip.WithWirePubKey(context.Background(), second, wirePubKey), second, "SizeFilter")
+
+	if err := filter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.banCount(); got != 1 {
+		t.Fatalf("ban writes = %d, want 1 after two uppercase-signed rejections", got)
 	}
 }
 

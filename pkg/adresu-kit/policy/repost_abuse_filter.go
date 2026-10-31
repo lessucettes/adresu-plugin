@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/config"
@@ -26,7 +26,7 @@ type UserActivityStats struct {
 
 type RepostAbuseFilter struct {
 	mu    sync.Mutex
-	stats *cache.LRU[string, *UserActivityStats]
+	stats *cache.LRU[nostr.PubKey, *UserActivityStats]
 	cfg   *config.RepostAbuseFilterConfig
 }
 
@@ -34,7 +34,7 @@ var nip21Re = regexp.MustCompile(`\b(naddr1|nevent1|note1)[0-9a-z]+\b`)
 
 func NewRepostAbuseFilter(cfg *config.RepostAbuseFilterConfig) (*RepostAbuseFilter, error) {
 	size := cfg.CacheSize
-	statsCache := cache.NewLRU[string, *UserActivityStats](size, cfg.CacheTTL)
+	statsCache := cache.NewLRU[nostr.PubKey, *UserActivityStats](size, cfg.CacheTTL)
 
 	if cfg.MaxRatio < 0 {
 		cfg.MaxRatio = 0
@@ -115,7 +115,7 @@ func (f *RepostAbuseFilter) isRepostNIP18(ev *nostr.Event) (bool, string) {
 	switch ev.Kind {
 	case nostr.KindRepost:
 		return true, "kind6"
-	case 16:
+	case nostr.KindGenericRepost:
 		return true, "kind16"
 	case nostr.KindTextNote:
 		if hasTag(ev, "q") {

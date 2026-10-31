@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 	"golang.org/x/time/rate"
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
@@ -26,8 +26,8 @@ type EphemeralChatFilter struct {
 	cfg        *config.EphemeralChatFilterConfig
 	zalgoRegex *regexp.Regexp
 	wordRegex  *regexp.Regexp
-	lastSeen   *cache.LRU[string, time.Time]
-	limiters   *cache.LRU[string, *rate.Limiter]
+	lastSeen   *cache.LRU[nostr.PubKey, time.Time]
+	limiters   *cache.LRU[nostr.PubKey, *rate.Limiter]
 }
 
 func NewEphemeralChatFilter(cfg *config.EphemeralChatFilterConfig) (*EphemeralChatFilter, error) {
@@ -52,8 +52,8 @@ func NewEphemeralChatFilter(cfg *config.EphemeralChatFilterConfig) (*EphemeralCh
 	if size <= 0 {
 		size = 10000
 	}
-	lastSeen := cache.NewLRU[string, time.Time](size, max(5*time.Minute, cfg.MinDelay))
-	limiters := cache.NewLRU[string, *rate.Limiter](size, 15*time.Minute)
+	lastSeen := cache.NewLRU[nostr.PubKey, time.Time](size, max(5*time.Minute, cfg.MinDelay))
+	limiters := cache.NewLRU[nostr.PubKey, *rate.Limiter](size, 15*time.Minute)
 
 	filter := &EphemeralChatFilter{
 		cfg:        cfg,
@@ -66,10 +66,10 @@ func NewEphemeralChatFilter(cfg *config.EphemeralChatFilterConfig) (*EphemeralCh
 	return filter, nil
 }
 
-func (f *EphemeralChatFilter) Match(_ context.Context, event *nostr.Event, meta map[string]any) (FilterResult, error) {
+func (f *EphemeralChatFilter) Match(ctx context.Context, event *nostr.Event, meta map[string]any) (FilterResult, error) {
 	newResult := NewResultFunc(ephemeralChatFilterName)
 
-	if !f.cfg.Enabled || !slices.Contains(f.cfg.Kinds, event.Kind) {
+	if !f.cfg.Enabled || !slices.Contains(f.cfg.Kinds, int(event.Kind)) {
 		return newResult(true, "Filter is disabled or does not apply to this event kind.", nil)
 	}
 	f.mu.Lock()
@@ -143,7 +143,7 @@ func (f *EphemeralChatFilter) Match(_ context.Context, event *nostr.Event, meta 
 		return newResult(true, "Publishing rate is within the allowed limit.", nil)
 	}
 
-	if nip.IsPoWValid(event, f.cfg.RequiredPoWOnLimit) {
+	if nip.IsPoWValid(ctx, event, f.cfg.RequiredPoWOnLimit) {
 		return newResult(true, "Proof of work satisfies the requirement for bypassing the publishing rate limit.", nil)
 	}
 
@@ -151,7 +151,7 @@ func (f *EphemeralChatFilter) Match(_ context.Context, event *nostr.Event, meta 
 	return newResult(false, reason, nil)
 }
 
-func (f *EphemeralChatFilter) getLimiter(key string) *rate.Limiter {
+func (f *EphemeralChatFilter) getLimiter(key nostr.PubKey) *rate.Limiter {
 	if limiter, ok := f.limiters.Get(key); ok {
 		return limiter
 	}

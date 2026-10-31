@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
@@ -115,11 +115,12 @@ func TestPipelineRejectsEventsAfterClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: "after-close"}, "", false)
+	eventID := nostr.ID{1}
+	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: eventID}, "", false)
 	if err == nil {
 		t.Fatal("ProcessEvent returned no error after Close")
 	}
-	if result.ID != "after-close" || result.Action != "reject" {
+	if result.ID != eventID.Hex() || result.Action != "reject" {
 		t.Fatalf("response = %+v, want a reject for after-close", result)
 	}
 }
@@ -129,7 +130,7 @@ func TestPipelineExposesDryRunMetadata(t *testing.T) {
 	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, nil, nil)
 	defer pipeline.Close()
 
-	event := &nostr.Event{ID: "dry-run"}
+	event := &nostr.Event{ID: nostr.ID{2}}
 	if _, err := pipeline.ProcessEvent(context.Background(), event, "", true); err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestPipelineDryRunAcceptsWithoutHandlers(t *testing.T) {
 	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, []RejectionHandler{handler}, nil)
 	defer pipeline.Close()
 
-	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: "dry"}, "", true)
+	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{3}}, "", true)
 	if err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestPipelineRunsHandlersOnRejection(t *testing.T) {
 	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, []RejectionHandler{handler}, nil)
 	defer pipeline.Close()
 
-	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: "rejected"}, "", false)
+	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{4}}, "", false)
 	if err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestPipelineFilterErrorRejectsWithoutHandlers(t *testing.T) {
 	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, []RejectionHandler{handler}, nil)
 	defer pipeline.Close()
 
-	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: "failed"}, "", false)
+	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{5}}, "", false)
 	if !errors.Is(err, filterErr) {
 		t.Fatalf("error = %v, want %v", err, filterErr)
 	}
@@ -213,7 +214,7 @@ func TestPipelineRecoversFilterPanic(t *testing.T) {
 	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, nil, nil)
 	defer pipeline.Close()
 
-	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: "panic"}, "", false)
+	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{6}}, "", false)
 	if err != nil {
 		t.Fatalf("ProcessEvent returned an error after a recovered panic: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestPipelineCloseWaitsForInFlightEvent(t *testing.T) {
 
 	eventDone := make(chan PolicyResponse, 1)
 	go func() {
-		result, _ := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: "in-flight"}, "", false)
+		result, _ := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{7}}, "", false)
 		eventDone <- result
 	}()
 

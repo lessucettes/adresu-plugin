@@ -4,15 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"fiatjaf.com/nostr"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/nbd-wtf/go-nostr"
 )
 
 // testStore is an in-memory store.Store that can inject failures and block
@@ -122,10 +123,10 @@ func (s *testStore) ApplyModeration(ctx context.Context, actionID, pubkey string
 
 func (s *testStore) Close() error { return nil }
 
-func (s *testStore) isBanned(pubkey string) bool {
+func (s *testStore) isBanned(pubkey nostr.PubKey) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.banned[strings.ToLower(pubkey)]
+	return s.banned[pubkey.Hex()]
 }
 
 func (s *testStore) banCount() int {
@@ -167,18 +168,14 @@ func (c *testStrfry) callAuthors() []string {
 	return append([]string(nil), c.calls...)
 }
 
-func newKeyPair(t *testing.T) (sk, pk string) {
+func newKeyPair(t *testing.T) (sk nostr.SecretKey, pk nostr.PubKey) {
 	t.Helper()
 
-	sk = nostr.GeneratePrivateKey()
-	pk, err := nostr.GetPublicKey(sk)
-	if err != nil {
-		t.Fatalf("GetPublicKey: %v", err)
-	}
-	return sk, pk
+	sk = nostr.Generate()
+	return sk, sk.Public()
 }
 
-func signedEvent(t *testing.T, sk string, kind int, content string, tags nostr.Tags) *nostr.Event {
+func signedEvent(t *testing.T, sk nostr.SecretKey, kind nostr.Kind, content string, tags nostr.Tags) *nostr.Event {
 	t.Helper()
 
 	event := &nostr.Event{
@@ -193,34 +190,46 @@ func signedEvent(t *testing.T, sk string, kind int, content string, tags nostr.T
 	return event
 }
 
-// signedEventWithPubkey signs an event without letting go-nostr rewrite the
-// caller-supplied pubkey spelling. evt.Sign replaces PubKey with the canonical
-// lowercase key, so case-sensitivity regressions need independent signing.
-func signedEventWithPubkey(t *testing.T, sk, pubKey string, kind int, content string, tags nostr.Tags) *nostr.Event {
+// signedEventWithWirePubKey signs the NIP-01 body using pubKeyHex exactly as
+// it appeared on the wire. The typed Event stores the same public key bytes,
+// but its canonical serializer would lowercase them, so tests that exercise
+// strfry's verbatim pubkey hashing must build the signed bytes explicitly and
+// attach pubKeyHex with nip.WithWirePubKey.
+func signedEventWithWirePubKey(t *testing.T, sk nostr.SecretKey, pubKeyHex string, kind nostr.Kind, content string, tags nostr.Tags) *nostr.Event {
 	t.Helper()
 
-	event := &nostr.Event{
-		PubKey:    pubKey,
-		Kind:      kind,
-		CreatedAt: nostr.Now(),
-		Content:   content,
-		Tags:      tags,
+	createdAt := nostr.Now()
+	if tags == nil {
+		tags = nostr.Tags{}
 	}
-	hash := sha256.Sum256(event.Serialize())
-
-	keyBytes, err := hex.DecodeString(sk)
+	tagsJSON, err := json.Marshal(tags)
 	if err != nil {
-		t.Fatalf("decode signer key: %v", err)
+		t.Fatalf("marshal tags: %v", err)
 	}
+	contentJSON, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
+	}
+	serialized := fmt.Sprintf(`[0,"%s",%d,%d,%s,%s]`,
+		pubKeyHex, int64(createdAt), int(kind), tagsJSON, contentJSON)
+	hash := sha256.Sum256([]byte(serialized))
+
+	keyBytes := sk[:]
 	privateKey, _ := btcec.PrivKeyFromBytes(keyBytes)
 	sig, err := schnorr.Sign(privateKey, hash[:])
 	if err != nil {
 		t.Fatalf("sign event: %v", err)
 	}
 
-	event.ID = hex.EncodeToString(hash[:])
-	event.Sig = hex.EncodeToString(sig.Serialize())
-	return event
+	return &nostr.Event{
+		ID:        nostr.ID(hash),
+		PubKey:    sk.Public(),
+		CreatedAt: createdAt,
+		Kind:      kind,
+		Tags:      tags,
+		Content:   content,
+		Sig:       [64]byte(sig.Serialize()),
+	}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool, message string) {
@@ -236,16 +245,13 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool, message
 	t.Fatal(message)
 }
 
-func signDelegationToken(t *testing.T, delegatorSK, delegateePubKey, conditions string) string {
+func signDelegationToken(t *testing.T, delegatorSK nostr.SecretKey, delegateePubKey nostr.PubKey, conditions string) string {
 	t.Helper()
 
-	keyBytes, err := hex.DecodeString(delegatorSK)
-	if err != nil {
-		t.Fatalf("decode delegator key: %v", err)
-	}
+	keyBytes := delegatorSK[:]
 	privateKey, _ := btcec.PrivKeyFromBytes(keyBytes)
 
-	token := fmt.Sprintf("nostr:delegation:%s:%s", delegateePubKey, conditions)
+	token := fmt.Sprintf("nostr:delegation:%s:%s", delegateePubKey.Hex(), conditions)
 	hash := sha256.Sum256([]byte(token))
 	sig, err := schnorr.Sign(privateKey, hash[:])
 	if err != nil {
