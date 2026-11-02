@@ -116,7 +116,7 @@ func (f *ModerationFilter) Match(ctx context.Context, event *nostr.Event, meta m
 		if !applied {
 			return newResult(true, "This moderation action was already applied; the duplicate was ignored.", nil)
 		}
-		slog.Info("Moderator action: banning pubkey", "banned_pubkey", pubkeyToModify.Hex())
+		slog.Warn("Moderator action: banning pubkey", "banned_pubkey", pubkeyToModify.Hex())
 		f.wg.Add(1)
 		go func() {
 			defer f.wg.Done()
