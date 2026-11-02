@@ -90,25 +90,33 @@ func (p *Pipeline) ProcessEvent(
 			slog.Error("Filter execution failed", "error", filterErr, "filter_name", res.Filter, "event_id", eventID)
 			return PolicyResponse{ID: eventID, Action: "reject", Msg: "An internal error occurred while running filter " + res.Filter + "."}, filterErr
 		}
+		logReputationObservation(event, meta)
 
 		if p.collector != nil {
 			p.collector.Report(res)
 		}
 
 		if !res.Allowed {
-			logAttrs := []slog.Attr{
-				slog.String("filter_name", res.Filter),
-				slog.String("remote_ip", remoteIP),
+			message := "Event rejected by filter"
+			logAttrs := []slog.Attr{slog.String("filter_name", res.Filter)}
+			if res.Filter == kitpolicy.ReputationFilterName {
+				// Forwarding an unknown author's event is not IP abuse. Keep
+				// social-policy diagnostics out of the Fail2Ban input stream.
+				message = "Event rejected by reputation policy"
+			} else {
+				logAttrs = append(logAttrs, slog.String("remote_ip", remoteIP))
+			}
+			logAttrs = append(logAttrs,
 				slog.String("event_id", eventID),
 				slog.Int("kind", int(event.Kind)),
 				slog.String("pubkey", event.PubKey.Hex()),
 				slog.String("reason", res.Reason),
-			}
+			)
 			logLevel := slog.LevelWarn
 			if level, ok := p.rejectionLevels[res.Filter]; ok {
 				logLevel = level.ToSlogLevel()
 			}
-			slog.LogAttrs(ctx, logLevel, "Event rejected by filter", logAttrs...)
+			slog.LogAttrs(ctx, logLevel, message, logAttrs...)
 
 			if dryRun {
 				slog.LogAttrs(ctx, slog.LevelInfo, "Dry-run: Event would be rejected", logAttrs...)

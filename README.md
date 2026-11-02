@@ -75,6 +75,21 @@ For client publications, `strfry` applies its own `events.rejectEventsOlderThanS
 
 The built-in defaults enable moderation reactions, so `policy.moderator_pubkey` is required unless both `policy.ban_emoji` and `policy.unban_emoji` are cleared. When the configuration file is missing, `-use-defaults` starts with all filters and moderation disabled.
 
+### Reputation filter
+
+The optional `ReputationFilter` checks event authors against a follow-graph ranking computed locally from operator-configured seeds and relays. It is disabled by default and does not call an external reputation API. Collection runs in the background; the event path only reads the latest in-memory snapshot and never waits for a relay.
+
+- All non-ephemeral events are checked. NIP-01 ephemeral kinds (`20000 <= kind < 30000`) bypass reputation.
+- `mode = "observe"` is the default: would-reject assessments are recorded for logging, the event is allowed, and the rest of the pipeline still runs. `mode = "enforce"` rejects with a `restricted: ...` reason.
+- A missing, stale, or below-coverage snapshot fails open.
+- Graph settings live under `[reputation]`; policy settings live under `[filters.reputation]`. Seeds are 64-character hex public keys, and relays must be explicit `ws://` or `wss://` URLs with a host, no credentials, and no fragment. At most eight relays are accepted.
+- `PageRank` and `TrustRank` are independent raw scores, not percentages. Both configured minima must pass. Zero minima only prove membership in a bounded graph and are not Sybil-resistant; no threshold is recommended by default.
+- There is no paid bypass, no trusted-author bypass, and no default allowlist.
+- Reputation observe mode is separate from the global `-dry-run` flag. `-dry-run` suppresses all rejections; observe mode affects only this filter.
+- Reputation diagnostics use separate messages without a remote IP so they do not feed the ordinary Fail2Ban rejection stream. Broader custom ban rules must also exclude `ReputationFilter`. Autoban automatically excludes this filter from strike counting.
+
+See [docs/reputation.md](docs/reputation.md) for collection boundaries, BFS depth semantics, persistence and hot reload, failure modes, and the full configuration reference.
+
 ### Hot reload
 
 The file passed to `-config` is watched while the plugin runs. After an edit, the configuration is re-read, validated, and swapped in without a restart; if loading or validation fails, the error is logged and the previous configuration stays active. Both relative and absolute `-config` paths are supported. For a symlinked configuration file, the watcher follows target edits and replacement of the configured link.

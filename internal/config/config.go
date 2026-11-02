@@ -15,11 +15,12 @@ import (
 )
 
 type Config struct {
-	Log     LogConfig     `toml:"log"`
-	DB      DBConfig      `toml:"database"`
-	Strfry  StrfryConfig  `toml:"strfry"`
-	Policy  PolicyConfig  `toml:"policy"`
-	Filters FiltersConfig `toml:"filters"`
+	Log        LogConfig        `toml:"log"`
+	DB         DBConfig         `toml:"database"`
+	Strfry     StrfryConfig     `toml:"strfry"`
+	Policy     PolicyConfig     `toml:"policy"`
+	Reputation ReputationConfig `toml:"reputation"`
+	Filters    FiltersConfig    `toml:"filters"`
 }
 
 type LogLevel string
@@ -89,6 +90,7 @@ type FiltersConfig struct {
 	Language      kitconfig.LanguageFilterConfig      `toml:"language"`
 	EphemeralChat kitconfig.EphemeralChatFilterConfig `toml:"ephemeral_chat"`
 	RepostAbuse   kitconfig.RepostAbuseFilterConfig   `toml:"repost_abuse"`
+	Reputation    kitconfig.ReputationFilterConfig    `toml:"reputation"`
 
 	BannedAuthor BannedAuthorFilterConfig `toml:"banned_author"`
 	AutoBan      AutoBanFilterConfig      `toml:"autoban"`
@@ -168,7 +170,9 @@ func defaultConfig() *Config {
 			UnbanEmoji:  "🔓",
 			BanDuration: 30 * 24 * time.Hour,
 		},
+		Reputation: defaultReputationConfig(),
 		Filters: FiltersConfig{
+			Reputation: kitconfig.DefaultReputationFilterConfig(),
 			RateLimiter: kitconfig.RateLimiterConfig{
 				// Without an explicit "by", the rate limiter would otherwise
 				// accept every event when enabled.
@@ -398,6 +402,20 @@ func (c *Config) validate() error {
 		}
 		if ra.CacheTTL <= 0 {
 			return errors.New("filters.repost_abuse.cache_ttl must be a positive duration")
+		}
+	}
+
+	// [filters.reputation]
+	// Filter mode and thresholds are always checked; an invalid disabled
+	// section must not fail later when the filter is constructed. Collector
+	// settings need seeds and relays, so they are only validated when the
+	// operator explicitly enables the filter.
+	if err := c.Filters.Reputation.Validate(); err != nil {
+		return fmt.Errorf("filters.reputation: %w", err)
+	}
+	if c.Filters.Reputation.Enabled {
+		if err := c.Reputation.validate(); err != nil {
+			return err
 		}
 	}
 

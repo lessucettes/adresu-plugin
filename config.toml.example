@@ -70,6 +70,63 @@
 
 
 # ==============================================================================
+#                    Local Reputation Graph (optional)
+# ==============================================================================
+# Disabled by default. When enabled, the plugin builds a bounded follow graph
+# from the seeds and relays below, ranks it locally, and stores a snapshot in
+# the plugin database. The ReputationFilter then checks event authors against
+# that local snapshot. No external reputation API is used.
+#
+# All non-ephemeral events are checked. NIP-01 ephemeral events
+# (20000 <= kind < 30000) bypass reputation. Events fail open while no usable
+# snapshot exists.
+#
+# The collector uses these fixed relays first. An optional bounded NIP-65
+# outbox fallback can look up only authors those relays missed; it is disabled
+# by default and described below.
+#
+#[reputation]
+# Seed authors as 64-character hex public keys. Required when the filter is
+# enabled. Collection starts from their kind-3 follow lists.
+#seeds = []
+#
+# Explicit ws:// or wss:// relay URLs with a host. Required when enabled.
+# At most 8 URLs. Credentials/userinfo and fragments are rejected.
+#relays = []
+#
+# Optional targeted NIP-65 outbox fallback. When enabled, only authors missing
+# from the fixed relays are looked up through the discovery bootstrap relays,
+# then queried on their verified write relays. Discovered relays must be wss
+# and public; loopback/private/reserved addresses, proxies and redirects are
+# blocked. Requires 1..8 bootstrap URLs with the same syntax as relays.
+# Static bootstrap URLs may use ws:// loopback for local test deployments.
+#discover_relays = false
+#discovery_relays = []
+#
+# How often to refresh the local graph. max_age keeps the last usable snapshot
+# available between refreshes and during transient failures.
+#refresh_interval = "1h"
+#max_age          = "72h" # Must be >= refresh_interval.
+#fetch_timeout    = "10s"
+#
+# Bounded breadth-first traversal. max_depth is the number of BFS levels
+# FETCHED: depth 1 fetches seed lists and keeps their targets as boundary
+# nodes; depth 2 also fetches direct follows. This is not the global graph.
+#max_depth   = 2 # 1..4
+#max_nodes   = 50000
+#max_edges   = 1000000
+#batch_size  = 64
+#max_follows = 5000
+#
+# A snapshot is ready only when coverage reaches min_coverage. Ranking
+# parameters apply to the local power iteration.
+#min_coverage   = 0.8
+#damping        = 0.85
+#tolerance      = 0.00000001
+#max_iterations = 200
+
+
+# ==============================================================================
 #                            Event Filters
 # ==============================================================================
 # All filters are disabled unless their section is uncommented.
@@ -226,6 +283,31 @@
 #cache_ttl                = "24h" # How long user activity data is kept in cache.
 #count_reject_as_activity = false # Rejected repost attempts refresh the inactivity timestamp; other filters' rejections are not observed.
 #require_nip21_in_quote   = false # Only count kind-1 q-tag quotes as reposts when content contains a note/nevent/naddr reference.
+
+# --- Reputation Filter ---
+# Disabled by default. When enabled, requires [reputation] seeds and relays.
+# PageRank and TrustRank are independent raw scores in [0,1], not percentages.
+# A known author must meet BOTH minima. Zero minima in enforce mode check only
+# membership in the bounded graph; this is NOT Sybil-resistant. Choose
+# thresholds from observe-mode data instead of assuming a default is safe.
+#
+# mode = "observe" records would-reject assessments for logging and lets the
+# event continue through the rest of the pipeline. mode = "enforce" rejects
+# with a "restricted: ..." reason. This is separate from the global -dry-run
+# option, which suppresses all rejections.
+#
+# Ephemeral kinds (20000 <= kind < 30000) always bypass this filter. Events
+# pass when the snapshot is missing, stale, or not ready.
+#
+# Reputation logs use separate messages without remote IPs, not ordinary
+# abuse-rejection records. Exclude them from broader custom ban rules. See
+# docs/reputation.md for the full operational notes.
+#
+#[filters.reputation]
+#enabled       = false
+#mode          = "observe"
+#min_pagerank  = 0.0
+#min_trustrank = 0.0
 
 # --- Banned Author Filter ---
 #[filters.banned_author]

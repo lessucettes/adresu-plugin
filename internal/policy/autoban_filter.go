@@ -12,6 +12,7 @@ import (
 
 	lru "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/cache"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
+	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/store"
@@ -57,7 +58,8 @@ func NewAutoBanFilter(s store.Store, cfg *config.AutoBanFilterConfig) (*AutoBanF
 
 // HandleRejection is called when an event has been rejected by another filter.
 func (f *AutoBanFilter) HandleRejection(ctx context.Context, event *nostr.Event, filterName string) {
-	if !f.cfg.Enabled {
+	// Lack of social reputation is an admission decision, not author misconduct.
+	if !f.cfg.Enabled || filterName == kitpolicy.ReputationFilterName {
 		return
 	}
 	if f.cfg.MaxStrikes <= 0 {

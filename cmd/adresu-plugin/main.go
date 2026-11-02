@@ -21,9 +21,11 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/nip"
 	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
+	kitrep "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/reputation"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
 	"github.com/lessucettes/adresu-plugin/internal/policy"
+	repservice "github.com/lessucettes/adresu-plugin/internal/reputation"
 	"github.com/lessucettes/adresu-plugin/internal/store"
 	"github.com/lessucettes/adresu-plugin/internal/strfry"
 )
@@ -101,7 +103,14 @@ var (
 	pipelineMutex   sync.RWMutex
 )
 
-func buildPipeline(cfg *config.Config, db store.Store) (*policy.Pipeline, error) {
+func reputationReader(manager *repservice.Manager, cfg *config.Config) (kitrep.Reader, error) {
+	if !cfg.Filters.Reputation.Enabled {
+		return nil, nil
+	}
+	return manager.Reader(cfg.Reputation)
+}
+
+func buildPipeline(cfg *config.Config, db store.Store, reputationReader kitrep.Reader) (*policy.Pipeline, error) {
 	strfryClient := strfry.NewClient(cfg.Strfry.ExecutablePath, cfg.Strfry.ConfigPath)
 
 	var stages []policy.PipelineStage
@@ -150,6 +159,12 @@ func buildPipeline(cfg *config.Config, db store.Store) (*policy.Pipeline, error)
 		return nil, fmt.Errorf("failed to create BannedAuthorFilter: %w", err)
 	}
 	stages = append(stages, policy.PipelineStage{Filter: bannedAuthorFilter})
+
+	reputationFilter, err := kitpolicy.NewReputationFilter(&cfg.Filters.Reputation, reputationReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ReputationFilter: %w", err)
+	}
+	stages = append(stages, policy.PipelineStage{Filter: reputationFilter})
 
 	moderationFilter, err := policy.NewModerationFilter(
 		cfg.Policy.ModeratorPubKey, cfg.Policy.BanEmoji, cfg.Policy.UnbanEmoji, db, strfryClient, cfg.Policy.BanDuration,
@@ -218,8 +233,20 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 	}
 	defer db.Close()
 
-	p, err := buildPipeline(cfg, db)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	reputation := repservice.NewManager(ctx, db)
+	defer reputation.Close()
+	reader, err := reputationReader(reputation, cfg)
 	if err != nil {
+		return err
+	}
+	p, err := buildPipeline(cfg, db, reader)
+	if err != nil {
+		return err
+	}
+	if err := reputation.Configure(cfg.Reputation, cfg.Filters.Reputation.Enabled); err != nil {
+		_ = p.Close()
 		return err
 	}
 
@@ -227,15 +254,23 @@ func runApp(configPath string, useDefaults bool, dryRun bool) error {
 	currentPipeline = p
 	pipelineMutex.Unlock()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	var retired sync.WaitGroup
 
 	onReload := func(newCfg *config.Config) {
 		slog.Info("Reloading pipeline with new configuration...")
-		newPipeline, err := buildPipeline(newCfg, db)
+		reader, err := reputationReader(reputation, newCfg)
+		if err != nil {
+			slog.Error("Invalid reputation configuration on reload", "error", err)
+			return
+		}
+		newPipeline, err := buildPipeline(newCfg, db, reader)
 		if err != nil {
 			slog.Error("Failed to build new pipeline on config reload, keeping old one", "error", err)
+			return
+		}
+		if err := reputation.Configure(newCfg.Reputation, newCfg.Filters.Reputation.Enabled); err != nil {
+			_ = newPipeline.Close()
+			slog.Error("Failed to reload reputation collector, keeping old pipeline", "error", err)
 			return
 		}
 
@@ -427,7 +462,14 @@ func validateConfiguration(configPath string) error {
 	}
 	defer db.Close()
 
-	p, err := buildPipeline(cfg, db)
+	// Validation constructs the filter without starting network collection.
+	reputation := repservice.NewManager(context.Background(), db)
+	defer reputation.Close()
+	reader, err := reputationReader(reputation, cfg)
+	if err != nil {
+		return err
+	}
+	p, err := buildPipeline(cfg, db, reader)
 	if err != nil {
 		return err
 	}
