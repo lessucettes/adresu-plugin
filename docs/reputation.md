@@ -199,6 +199,16 @@ refresh can publish only if coverage and all other bounds pass, and its
 `valid_until` is limited by the oldest list's `fetched_at + max_age`: repeatedly
 recomputing stale cache data cannot extend the fallback window.
 
+Lists observed within `refresh_interval` are reused without another network
+query or receipt write unless approaching expiry within the worker's refresh
+budget, including when `max_age` equals `refresh_interval`.
+After an interrupted crawl, the next attempt therefore skips successfully
+cached fresh authors and can continue to later BFS batches. Missing authors
+are still queried, so this is not a guarantee that every large graph can finish
+within the deadline. Cached authors still count toward coverage and all graph
+limits; no partial graph is published. A complete graph can combine receipts
+from several interrupted attempts, always bounded by its oldest receipt.
+
 ## Failure modes and max-age fallback
 
 The filter fails open. An event is never rejected because reputation data is

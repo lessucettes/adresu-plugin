@@ -42,26 +42,55 @@ func collect(ctx context.Context, cfg config.ReputationConfig, seeds []nostr.Pub
 				return nil, 0, time.Time{}, fmt.Errorf("follow graph expired during collection")
 			}
 			batch := frontier[start:min(start+cfg.BatchSize, len(frontier))]
-			fetched, fetchErr := source.Fetch(ctx, batch)
-			if fetchErr != nil {
-				slog.Debug("Reputation follow-list query failed; retaining cached lists", "error", fetchErr)
-				// No source reached EOSE. Signed events seen before a timeout
-				// do not establish the latest list or refresh its observation age.
-				fetched = nil
-			}
+			cached := make(map[nostr.PubKey]*kitrep.FollowList, len(batch))
+			pending := make([]nostr.PubKey, 0, len(batch))
+			// Resume completed work on retries without renewing its receipts.
+			// Fetch early enough to preserve readiness when max_age is close
+			// to refresh_interval, matching the worker's expiry reserve.
+			freshFor := min(cfg.RefreshInterval, cfg.MaxAge-refreshBudget(&view{cfg: cfg}))
+			now := time.Now()
 			for _, pk := range batch {
-				requested++
-				if list, ok := fetched[pk]; ok {
-					if list.Author != pk || len(list.Follows) > cfg.MaxFollows {
-						return nil, 0, time.Time{}, fmt.Errorf("follow-list source violated its bounds")
-					}
-					if err := store.SaveFollowList(ctx, list); err != nil {
-						return nil, 0, time.Time{}, fmt.Errorf("save follow list: %w", err)
-					}
-				}
 				list, err := store.LoadFollowList(ctx, pk)
 				if err != nil {
 					return nil, 0, time.Time{}, fmt.Errorf("load follow list: %w", err)
+				}
+				cached[pk] = list
+				if list == nil || list.FetchedAt.IsZero() || len(list.Follows) > cfg.MaxFollows ||
+					list.FetchedAt.After(now.Add(5*time.Minute)) || !now.Before(list.FetchedAt.Add(freshFor)) {
+					pending = append(pending, pk)
+				}
+			}
+			var fetched map[nostr.PubKey]kitrep.FollowList
+			if len(pending) > 0 {
+				var fetchErr error
+				fetched, fetchErr = source.Fetch(ctx, pending)
+				if fetchErr != nil {
+					slog.Debug("Reputation follow-list query failed; retaining cached lists", "error", fetchErr)
+					// No source reached EOSE. Signed events seen before a timeout
+					// do not establish the latest list or refresh its observation age.
+					fetched = nil
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, 0, time.Time{}, err
+			}
+			for _, pk := range batch {
+				requested++
+				list := cached[pk]
+				if candidate, ok := fetched[pk]; ok {
+					if candidate.Author != pk || len(candidate.Follows) > cfg.MaxFollows {
+						return nil, 0, time.Time{}, fmt.Errorf("follow-list source violated its bounds")
+					}
+					if err := store.SaveFollowList(ctx, candidate); err != nil {
+						return nil, 0, time.Time{}, fmt.Errorf("save follow list: %w", err)
+					}
+					// Saving can retain a newer version or the winning equal-time
+					// event. Always use the store's result, not the candidate.
+					var err error
+					list, err = store.LoadFollowList(ctx, pk)
+					if err != nil {
+						return nil, 0, time.Time{}, fmt.Errorf("load follow list: %w", err)
+					}
 				}
 				if list == nil {
 					continue // Absence must not erase a previously known adjacency list.

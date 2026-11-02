@@ -15,6 +15,8 @@ func TestCollectReplacementAndMissingLists(t *testing.T) {
 	seed, a, b := nostr.KeyOne.Public(), nostr.Generate().Public(), nostr.Generate().Public()
 	cfg := testConfig(seed)
 	cfg.MaxDepth = 1
+	// Every collection in this replacement test must actually query the source.
+	cfg.RefreshInterval = time.Nanosecond
 	db := testStore(t)
 	old := followList(seed, a)
 	if err := db.SaveFollowList(ctx, old); err != nil {

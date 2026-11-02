@@ -170,10 +170,15 @@ func TestWorkerCachedRefreshWaitsWithoutExtendingExpiry(t *testing.T) {
 		if !reader.Lookup(seed).Ready {
 			t.Fatal("valid cached list did not establish readiness")
 		}
+		if calls.Load() != 0 {
+			t.Fatal("initial fresh-cache pass queried the network")
+		}
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
-		if calls.Load() != 2 {
-			t.Fatalf("expected one early refresh without a tight retry loop, got %d calls", calls.Load())
+		// The initial pass reuses fresh cache; only the expiry-reserve pass
+		// needs a network query, without extending the original receipt.
+		if calls.Load() != 1 {
+			t.Fatalf("expected one early query after fresh-cache reuse, got %d calls", calls.Load())
 		}
 		if snapshot := m.current.Load().snapshot.Load(); !snapshot.ValidUntil.Equal(expires) {
 			t.Fatalf("cached refresh extended expiry: got %s, want %s", snapshot.ValidUntil, expires)
