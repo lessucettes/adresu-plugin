@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"fiatjaf.com/nostr"
@@ -13,30 +12,6 @@ import (
 
 	"github.com/lessucettes/adresu-plugin/pkg/adresu-kit/reputation"
 )
-
-// getBoundedValue reads a Badger value after checking its reported size, then
-// checks the actual size as well. This keeps decoding of a corrupt database
-// from allocating an unbounded buffer.
-func getBoundedValue(txn *badger.Txn, key []byte, maximum int) ([]byte, bool, error) {
-	item, err := txn.Get(key)
-	if errors.Is(err, badger.ErrKeyNotFound) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if size := item.ValueSize(); size > int64(maximum) {
-		return nil, true, fmt.Errorf("value for %q is %d bytes, maximum is %d", key, size, maximum)
-	}
-	value, err := item.ValueCopy(nil)
-	if err != nil {
-		return nil, true, err
-	}
-	if len(value) > maximum {
-		return nil, true, fmt.Errorf("value for %q is %d bytes, maximum is %d", key, len(value), maximum)
-	}
-	return value, true, nil
-}
 
 // LoadReputationSnapshot returns the generation currently published by the
 // manifest, or (nil, nil) when no snapshot has ever been saved. A single

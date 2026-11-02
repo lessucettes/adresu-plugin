@@ -191,11 +191,15 @@ func TestReputationFilterEnforceUnknownAuthor(t *testing.T) {
 	if !strings.HasPrefix(result.Reason, "restricted: ") {
 		t.Fatalf("reason = %q, want a 'restricted: ' prefix", result.Reason)
 	}
-	if !strings.Contains(result.Reason, "not known") {
+	if result.Reason != "restricted: The event author is not in this relay's trusted network." {
 		t.Fatalf("reason = %q, want it to explain the unknown author", result.Reason)
 	}
-	if len(meta) != 0 {
+	if _, exists := meta[ReputationObservationKey]; exists {
 		t.Fatalf("enforce rejection produced observation metadata: %#v", meta)
+	}
+	diagnostic, ok := meta[ReputationDiagnosticKey].(ReputationDiagnostic)
+	if !ok || diagnostic.Assessment != reader.assessment || diagnostic.MinPageRank != 0 || diagnostic.MinTrustRank != 0 {
+		t.Fatalf("enforce diagnostic = %#v, want the assessment and configured minima", meta)
 	}
 }
 
@@ -239,14 +243,13 @@ func TestReputationFilterEnforceRequiresBothRawScores(t *testing.T) {
 		pageRank  float64
 		trustRank float64
 		allowed   bool
-		contains  []string
 	}{
-		{"both exactly at minimum", 0.10, 0.20, true, nil},
-		{"both above minimum", 0.11, 0.21, true, nil},
-		{"pagerank below", 0.09, 0.20, false, []string{"pagerank"}},
-		{"trustrank below", 0.10, 0.19, false, []string{"trustrank"}},
-		{"both below", 0.09, 0.19, false, []string{"pagerank", "trustrank"}},
-		{"nan pagerank", math.NaN(), 0.20, false, []string{"pagerank"}},
+		{"both exactly at minimum", 0.10, 0.20, true},
+		{"both above minimum", 0.11, 0.21, true},
+		{"pagerank below", 0.09, 0.20, false},
+		{"trustrank below", 0.10, 0.19, false},
+		{"both below", 0.09, 0.19, false},
+		{"nan pagerank", math.NaN(), 0.20, false},
 	}
 
 	for _, test := range tests {
@@ -274,10 +277,8 @@ func TestReputationFilterEnforceRequiresBothRawScores(t *testing.T) {
 				if !strings.HasPrefix(result.Reason, "restricted: ") {
 					t.Fatalf("reason = %q, want a 'restricted: ' prefix", result.Reason)
 				}
-				for _, want := range test.contains {
-					if !strings.Contains(result.Reason, want) {
-						t.Errorf("reason = %q, want it to mention %q", result.Reason, want)
-					}
+				if result.Reason != "restricted: The event author's reputation does not meet this relay's requirements." {
+					t.Errorf("unexpected public reason: %q", result.Reason)
 				}
 			}
 		})
@@ -305,6 +306,33 @@ func TestReputationFilterPassDoesNotRecordObservation(t *testing.T) {
 	}
 	if len(meta) != 0 {
 		t.Fatalf("passing author produced observation metadata: %#v", meta)
+	}
+}
+
+func TestReputationRejectionsUseHumanReadableMessages(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		assessment reputation.Assessment
+		want       string
+	}{
+		{"unknown", reputation.Assessment{Ready: true}, "restricted: The event author is not in this relay's trusted network."},
+		{"low pagerank", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{PageRank: 1e-7, TrustRank: 0.2}}, "restricted: The event author's reputation does not meet this relay's requirements."},
+		{"low trustrank", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{PageRank: 0.1, TrustRank: 4.394921967211787e-7}}, "restricted: The event author's reputation does not meet this relay's requirements."},
+		{"both low", reputation.Assessment{Ready: true, Known: true}, "restricted: The event author's reputation does not meet this relay's requirements."},
+		{"invalid score", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{PageRank: math.NaN(), TrustRank: 0.2}}, "restricted: The event author's reputation does not meet this relay's requirements."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			filter, err := NewReputationFilter(&kitconfig.ReputationFilterConfig{
+				Enabled: true, Mode: "enforce", MinPageRank: 0.1, MinTrustRank: 0.2,
+			}, &fakeReputationReader{assessment: test.assessment})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := matchReputation(t, filter, nostr.KindTextNote, fixturePubKey(1), nil)
+			if result.Allowed || result.Reason != test.want {
+				t.Fatalf("user-facing result = %+v, want rejection with %q", result, test.want)
+			}
+		})
 	}
 }
 

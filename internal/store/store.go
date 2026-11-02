@@ -18,7 +18,8 @@ const (
 	moderationActionPrefix = "moderation-action:"
 )
 
-// Store is the generic interface for all storage types.
+// Store is the ban and moderation storage contract. Reputation storage uses
+// a separate interface owned by internal/reputation.
 type Store interface {
 	IsAuthorBanned(ctx context.Context, pubkey string) (bool, error)
 	// BanAuthor adds or extends a ban without reducing its existing expiry.
@@ -70,6 +71,30 @@ func NewBadgerStore(cfg *config.DBConfig) (*BadgerStore, error) {
 // Close gracefully closes the database connection.
 func (s *BadgerStore) Close() error {
 	return s.db.Close()
+}
+
+// getBoundedValue reads a Badger value after checking its reported size, then
+// checks the actual size as well. This keeps decoding of a corrupt database
+// from allocating an unbounded buffer.
+func getBoundedValue(txn *badger.Txn, key []byte, maximum int) ([]byte, bool, error) {
+	item, err := txn.Get(key)
+	if errors.Is(err, badger.ErrKeyNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if size := item.ValueSize(); size > int64(maximum) {
+		return nil, true, fmt.Errorf("value for %q is %d bytes, maximum is %d", key, size, maximum)
+	}
+	value, err := item.ValueCopy(nil)
+	if err != nil {
+		return nil, true, err
+	}
+	if len(value) > maximum {
+		return nil, true, fmt.Errorf("value for %q is %d bytes, maximum is %d", key, len(value), maximum)
+	}
+	return value, true, nil
 }
 
 // IsAuthorBanned checks if a given pubkey is in the ban list.

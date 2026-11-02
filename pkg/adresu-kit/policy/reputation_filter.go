@@ -3,7 +3,6 @@ package policy
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"fiatjaf.com/nostr"
 
@@ -18,7 +17,18 @@ const (
 	// mode encounters an event that would have been rejected. The plugin
 	// integration owns logging; the kit filter never creates a logger.
 	ReputationObservationKey = "reputation_observation"
+	// ReputationDiagnosticKey carries ReputationDiagnostic for a rejected or
+	// would-reject assessment, keeping administrative details out of Reason.
+	ReputationDiagnosticKey = "reputation_diagnostic"
 )
+
+// ReputationDiagnostic supplies numeric details to application-owned logging.
+// ReputationObservationKey retains its separate Assessment value for callers.
+type ReputationDiagnostic struct {
+	Assessment   reputation.Assessment
+	MinPageRank  float64
+	MinTrustRank float64
+}
 
 // ReputationFilter applies a local reputation snapshot to non-ephemeral
 // events. It is intentionally policy-only: it never talks to the network and
@@ -79,6 +89,11 @@ func (f *ReputationFilter) Match(_ context.Context, event *nostr.Event, meta map
 	if !wouldReject {
 		return newResult(true, "Event passes reputation checks.", nil)
 	}
+	if meta != nil {
+		meta[ReputationDiagnosticKey] = ReputationDiagnostic{
+			Assessment: assessment, MinPageRank: f.minPageRank, MinTrustRank: f.minTrustRank,
+		}
+	}
 
 	if f.mode == config.ReputationModeObserve {
 		if meta != nil {
@@ -94,21 +109,13 @@ func (f *ReputationFilter) Match(_ context.Context, event *nostr.Event, meta map
 // independently; the scores are not percentages and are not combined.
 func (f *ReputationFilter) evaluate(assessment reputation.Assessment) (bool, string) {
 	if !assessment.Known {
-		return true, "author is not known in the reputation snapshot"
+		return true, "The event author is not in this relay's trusted network."
 	}
 
-	var misses []string
 	// Write the comparison as >= so a NaN reader value cannot slip
 	// through; NaN < minimum is false but NaN >= minimum must be false too.
-	if !(assessment.Score.PageRank >= f.minPageRank) {
-		misses = append(misses, fmt.Sprintf("pagerank %g is below the minimum %g", assessment.Score.PageRank, f.minPageRank))
+	if !(assessment.Score.PageRank >= f.minPageRank) || !(assessment.Score.TrustRank >= f.minTrustRank) {
+		return true, "The event author's reputation does not meet this relay's requirements."
 	}
-	if !(assessment.Score.TrustRank >= f.minTrustRank) {
-		misses = append(misses, fmt.Sprintf("trustrank %g is below the minimum %g", assessment.Score.TrustRank, f.minTrustRank))
-	}
-	if len(misses) == 0 {
-		return false, ""
-	}
-
-	return true, "author reputation is below the configured minimum: " + strings.Join(misses, "; ")
+	return false, ""
 }

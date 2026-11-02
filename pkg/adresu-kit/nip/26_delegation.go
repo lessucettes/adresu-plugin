@@ -13,6 +13,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 )
 
+// ValidateDelegation validates the first delegation tag and returns the
+// delegator's hex public key. It does not verify the event's own signature.
 func ValidateDelegation(ctx context.Context, event *nostr.Event) (string, error) {
 	if event == nil {
 		return "", fmt.Errorf("event is nil")

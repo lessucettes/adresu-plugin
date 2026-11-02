@@ -75,7 +75,7 @@ func (f *EphemeralChatFilter) Match(ctx context.Context, event *nostr.Event, met
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	pubkey := authorKey(event)
+	pubkey := event.PubKey
 
 	if f.lastSeen != nil && f.cfg.MinDelay > 0 {
 		now := time.Now()

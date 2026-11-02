@@ -1,10 +1,12 @@
 package reputation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -128,7 +130,7 @@ func (s *discoverySource) discover(ctx context.Context, authors []nostr.PubKey) 
 		}
 	}
 	// A failed or negative lookup keeps any previously verified metadata.
-	groups, _, _ := selectDiscoveryEndpoints(metadata)
+	groups := selectDiscoveryEndpoints(metadata)
 	if len(groups) == 0 {
 		return nil, 0, errors.Join(errs...)
 	}
@@ -192,4 +194,95 @@ func (s *discoverySource) runGroups(ctx context.Context, groups []groupedQuery, 
 		}
 	}
 	return results, completed
+}
+
+// fetchMetadata queries the configured bootstrap indexers for signed kind
+// 10002 metadata. The returned completed flag means at least one bootstrap
+// relay reached EOSE; only then is an absent author treated as a negative
+// result rather than a transient failure.
+func (s *discoverySource) fetchMetadata(ctx context.Context, authors []nostr.PubKey, now time.Time) (map[nostr.PubKey]kitrep.RelayList, bool, error) {
+	groups := make([]groupedQuery, 0, len(s.cfg.DiscoveryRelays))
+	for _, url := range s.cfg.DiscoveryRelays {
+		groups = append(groups, groupedQuery{url: url, authors: authors})
+	}
+	results, completed := s.runGroups(ctx, groups, nostr.KindRelayListMetadata, s.bootstrap)
+	requested := make(map[nostr.PubKey]struct{}, len(authors))
+	for _, pk := range authors {
+		requested[pk] = struct{}{}
+	}
+	found := make(map[nostr.PubKey]kitrep.RelayList)
+	var errs []error
+	for _, result := range results {
+		if result.err != nil {
+			errs = append(errs, result.err)
+			continue
+		}
+		for _, raw := range result.raws {
+			list, err := kitrep.ParseRelayList(ctx, raw, now)
+			if err != nil {
+				continue
+			}
+			if _, ok := requested[list.Author]; !ok {
+				continue
+			}
+			previous, ok := found[list.Author]
+			if !ok || newerRelayMetadata(list, previous) {
+				found[list.Author] = list
+			}
+		}
+	}
+	return found, completed > 0, errors.Join(errs...)
+}
+
+func newerRelayMetadata(a, b kitrep.RelayList) bool {
+	return a.CreatedAt > b.CreatedAt ||
+		(a.CreatedAt == b.CreatedAt && bytes.Compare(a.EventID[:], b.EventID[:]) < 0)
+}
+
+// selectDiscoveryEndpoints groups authors by write relay and applies the
+// per-author and per-fetch caps. Relay URLs are validated again here even
+// though the metadata parser already rejected insecure shapes.
+func selectDiscoveryEndpoints(metadata map[nostr.PubKey]kitrep.RelayList) []groupedQuery {
+	authors := make([]nostr.PubKey, 0, len(metadata))
+	for pk := range metadata {
+		authors = append(authors, pk)
+	}
+	sort.Slice(authors, func(i, j int) bool { return bytes.Compare(authors[i][:], authors[j][:]) < 0 })
+	byRelay := make(map[string][]nostr.PubKey)
+	selected := make(map[string]struct{})
+	for _, pk := range authors {
+		seen := make(map[string]struct{})
+		count := 0
+		for _, raw := range metadata[pk].WriteRelays {
+			if count >= maxDiscoveryAuthorURLs {
+				break
+			}
+			url, err := validateDiscoveryURL(raw)
+			if err != nil {
+				continue
+			}
+			if _, duplicate := seen[url]; duplicate {
+				continue
+			}
+			seen[url] = struct{}{}
+			if _, known := selected[url]; !known {
+				if len(selected) >= maxDiscoveryEndpoints {
+					continue
+				}
+				selected[url] = struct{}{}
+			}
+			byRelay[url] = append(byRelay[url], pk)
+			count++
+		}
+	}
+	urls := make([]string, 0, len(byRelay))
+	for url := range byRelay {
+		urls = append(urls, url)
+	}
+	sort.Strings(urls)
+	groups := make([]groupedQuery, 0, len(urls))
+	for _, url := range urls {
+		groups = append(groups, groupedQuery{url: url, authors: byRelay[url]})
+	}
+	return groups
 }

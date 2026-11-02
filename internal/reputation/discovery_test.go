@@ -331,6 +331,63 @@ func TestDiscoverySourceCancellation(t *testing.T) {
 	}
 }
 
+func TestDiscoveryGroupAggregateByteBudget(t *testing.T) {
+	seed := nostr.KeyOne.Public()
+	// Deliberately unsigned: the budget must apply before signature parsing.
+	event := map[string]any{"pubkey": seed.Hex(), "kind": 3, "content": strings.Repeat("x", (1<<20)-512)}
+	relay := serveDiscoveryRelay(t, false, func(ctx context.Context, conn *websocket.Conn, sub string, _ nostr.Filter) {
+		for i := 0; i < 6; i++ {
+			if !sendDiscoveryEvent(t, ctx, conn, sub, event) {
+				return
+			}
+		}
+		_ = sendDiscoveryEOSE(t, ctx, conn, sub)
+	})
+	cfg := discoveryConfig(seed, wsTestURL(relay), wsTestURL(relay))
+	cfg.FetchTimeout = 10 * time.Second
+	source := newDiscoverySourceWithOptions(cfg, discoveryDialOptions{})
+	groups := make([]groupedQuery, 9)
+	for i := range groups {
+		groups[i] = groupedQuery{url: wsTestURL(relay), authors: []nostr.PubKey{seed}}
+	}
+	results, _ := source.runGroups(context.Background(), groups, nostr.KindFollowList, newOperatorClient())
+	retained := 0
+	limited := false
+	for _, result := range results {
+		for _, raw := range result.raws {
+			retained += len(raw)
+		}
+		if result.err != nil && strings.Contains(result.err.Error(), "aggregate byte budget") {
+			limited = true
+		}
+	}
+	if retained > maxRelayBatchBytes || !limited {
+		t.Fatalf("aggregate budget not enforced: retained=%d, limited=%v", retained, limited)
+	}
+}
+
+func TestCompletedMetadataMissKeepsLastVerifiedOutbox(t *testing.T) {
+	key := nostr.Generate()
+	pk := key.Public()
+	event := signedList(t, key, "cached outbox")
+	outbox := serveDiscoveryRelay(t, true, func(ctx context.Context, conn *websocket.Conn, sub string, _ nostr.Filter) {
+		_ = sendDiscoveryEvent(t, ctx, conn, sub, event)
+		_ = sendDiscoveryEOSE(t, ctx, conn, sub)
+	})
+	empty := serveDiscoveryRelay(t, false, func(ctx context.Context, conn *websocket.Conn, sub string, _ nostr.Filter) {
+		_ = sendDiscoveryEOSE(t, ctx, conn, sub)
+	})
+	cfg := discoveryConfig(pk, wsTestURL(empty), wsTestURL(empty))
+	source := newDiscoverySourceWithOptions(cfg, discoveryDialOptionsFor(outbox))
+	source.cache.putMetadata(pk, kitrep.RelayList{Author: pk, CreatedAt: 1, EventID: nostr.ID{1}, WriteRelays: []string{secureTestURL(t, outbox, "relay.example.com")}}, time.Now().Add(-2*discoveryMetadataTTL))
+	for i := 0; i < 2; i++ {
+		got, err := source.Fetch(context.Background(), []nostr.PubKey{pk})
+		if err != nil || got[pk].EventID != event.ID {
+			t.Fatalf("completed miss erased verified metadata on attempt %d: %+v, %v", i, got, err)
+		}
+	}
+}
+
 func TestSelectDiscoveryEndpointsCapsURLs(t *testing.T) {
 	metadata := make(map[nostr.PubKey]kitrep.RelayList)
 	for i := 0; i < 100; i++ {
@@ -341,9 +398,9 @@ func TestSelectDiscoveryEndpointsCapsURLs(t *testing.T) {
 		}
 		metadata[pk] = kitrep.RelayList{Author: pk, WriteRelays: urls}
 	}
-	groups, count, skipped := selectDiscoveryEndpoints(metadata)
-	if count > maxDiscoveryEndpoints || len(groups) != count || skipped == 0 {
-		t.Fatalf("endpoint cap = %d groups=%d skipped=%d", count, len(groups), skipped)
+	groups := selectDiscoveryEndpoints(metadata)
+	if len(groups) != maxDiscoveryEndpoints {
+		t.Fatalf("selected %d endpoints, want %d", len(groups), maxDiscoveryEndpoints)
 	}
 	perAuthor := make(map[nostr.PubKey]int)
 	for _, group := range groups {
@@ -492,6 +549,13 @@ func TestDiscoveryCacheBoundedAndNewestMetadataWins(t *testing.T) {
 	cache.putMetadata(a, kitrep.RelayList{CreatedAt: 9, EventID: nostr.ID{1}, WriteRelays: []string{"wss://older-id.example"}}, now)
 	if list, ok := cache.cached(a, now); !ok || list.WriteRelays[0] != "wss://new.example" {
 		t.Fatalf("newest metadata was not retained: %+v", list)
+	}
+	// Equal timestamps select the lower event ID, regardless of arrival order.
+	for _, id := range []byte{1, 3} {
+		cache.putMetadata(a, kitrep.RelayList{CreatedAt: 11, EventID: nostr.ID{id}, WriteRelays: []string{"wss://tie.example"}}, now)
+		if list, ok := cache.cached(a, now); !ok || list.EventID != (nostr.ID{1}) || list.WriteRelays[0] != "wss://tie.example" {
+			t.Fatalf("equal-time metadata did not retain the lower event ID after %d: %+v", id, list)
+		}
 	}
 	if _, ok := cache.cached(a, now.Add(discoveryMetadataTTL+time.Second)); ok {
 		t.Fatal("stale metadata was reported fresh")

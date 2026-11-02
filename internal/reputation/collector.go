@@ -47,7 +47,7 @@ func collect(ctx context.Context, cfg config.ReputationConfig, seeds []nostr.Pub
 			// Resume completed work on retries without renewing its receipts.
 			// Fetch early enough to preserve readiness when max_age is close
 			// to refresh_interval, matching the worker's expiry reserve.
-			freshFor := min(cfg.RefreshInterval, cfg.MaxAge-refreshBudget(&view{cfg: cfg}))
+			freshFor := min(cfg.RefreshInterval, cfg.MaxAge-refreshBudget(cfg))
 			now := time.Now()
 			for _, pk := range batch {
 				list, err := store.LoadFollowList(ctx, pk)

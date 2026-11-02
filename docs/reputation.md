@@ -38,6 +38,14 @@ A disabled filter accepts without a reader. An enabled filter requires a
 `reputation.Reader`; construction fails otherwise. An empty mode passed to the
 kit constructor is treated as `observe` for standalone callers.
 
+Client rejections retain the NIP-01 `restricted:` prefix and use short,
+human-readable messages about the event author. They do not expose snapshot
+internals, algorithm names, or numeric thresholds. Rejected and would-reject
+assessments also populate `meta[kitpolicy.ReputationDiagnosticKey]` with a
+`kitpolicy.ReputationDiagnostic`; application logging consumes it separately.
+Plugin diagnostics retain `known`, `pagerank`, `trustrank`, `min_pagerank`, and
+`min_trustrank` as structured fields, without remote-IP attribution.
+
 ## Scores and thresholds
 
 The snapshot exposes two independent raw scores:

@@ -60,8 +60,8 @@ func (f *RepostAbuseFilter) Match(_ context.Context, event *nostr.Event, meta ma
 		return newResult(true, "Repost ratio check does not apply to this event kind.", nil)
 	}
 
-	isRepost, _ := f.isRepostNIP18(event)
-	pubkey := authorKey(event)
+	isRepost := f.isRepostNIP18(event)
+	pubkey := event.PubKey
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -111,20 +111,16 @@ func (f *RepostAbuseFilter) Match(_ context.Context, event *nostr.Event, meta ma
 	return newResult(true, "Event passes the repost ratio check.", nil)
 }
 
-func (f *RepostAbuseFilter) isRepostNIP18(ev *nostr.Event) (bool, string) {
+func (f *RepostAbuseFilter) isRepostNIP18(ev *nostr.Event) bool {
 	switch ev.Kind {
-	case nostr.KindRepost:
-		return true, "kind6"
-	case nostr.KindGenericRepost:
-		return true, "kind16"
+	case nostr.KindRepost, nostr.KindGenericRepost:
+		return true
 	case nostr.KindTextNote:
 		if hasTag(ev, "q") {
-			if !f.cfg.RequireNIP21InQuote || contentHasNIP21Ref(ev.Content) {
-				return true, "quote1"
-			}
+			return !f.cfg.RequireNIP21InQuote || nip21Re.MatchString(ev.Content)
 		}
 	}
-	return false, ""
+	return false
 }
 
 func hasTag(ev *nostr.Event, tagName string) bool {
@@ -134,8 +130,4 @@ func hasTag(ev *nostr.Event, tagName string) bool {
 		}
 	}
 	return false
-}
-
-func contentHasNIP21Ref(s string) bool {
-	return nip21Re.MatchString(s)
 }

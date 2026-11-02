@@ -1,4 +1,5 @@
-// nip/13_pow.go
+// Package nip provides NIP-13 proof-of-work, NIP-26 delegation and canonical
+// event verification helpers, including original wire public-key spelling.
 package nip
 
 import (

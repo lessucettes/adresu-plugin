@@ -122,7 +122,7 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 		return newResult(true, "Content is too short for language detection; check was skipped.", nil)
 	}
 	if f.approvedCache != nil {
-		if _, ok := f.approvedCache.Get(authorKey(event)); ok {
+		if _, ok := f.approvedCache.Get(event.PubKey); ok {
 			return newResult(true, "Author has a cached language approval; check was skipped.", nil)
 		}
 	}
@@ -140,7 +140,7 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 	langName := detectedLang.String()
 	if _, isAllowed := f.allowedLangs[detectedLang]; isAllowed {
 		if f.approvedCache != nil {
-			f.approvedCache.Add(authorKey(event), struct{}{})
+			f.approvedCache.Add(event.PubKey, struct{}{})
 		}
 		if meta != nil {
 			meta["language"] = langName
@@ -156,7 +156,7 @@ func (f *LanguageFilter) Match(_ context.Context, event *nostr.Event, meta map[s
 		if hasRule {
 			if confidence := f.detector.ComputeLanguageConfidence(cleanedContent, primaryLang); confidence > threshold {
 				if f.approvedCache != nil {
-					f.approvedCache.Add(authorKey(event), struct{}{})
+					f.approvedCache.Add(event.PubKey, struct{}{})
 				}
 				if meta != nil {
 					meta["language"] = langName

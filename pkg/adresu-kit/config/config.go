@@ -1,4 +1,6 @@
-// config/config.go
+// Package config defines application-independent settings for Adresu Kit filters.
+// TOML tags are optional serialization hints; callers can construct settings
+// directly without a configuration file or the plugin's loader.
 package config
 
 import (

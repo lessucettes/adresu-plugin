@@ -11,24 +11,26 @@ import (
 	kitpolicy "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/policy"
 
 	"github.com/lessucettes/adresu-plugin/internal/config"
+	kitrep "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/reputation"
 )
 
 // errPipelineClosed is returned for events that arrive after Close started.
 var errPipelineClosed = errors.New("policy pipeline is closed")
 
-type MetricsCollector interface {
-	Report(res kitpolicy.FilterResult)
+type PolicyResponse struct {
+	ID     string `json:"id"`
+	Action string `json:"action"`
+	Msg    string `json:"msg,omitempty"`
 }
 
-type PipelineStage struct {
-	Filter kitpolicy.Filter
+type RejectionHandler interface {
+	HandleRejection(ctx context.Context, ev *nostr.Event, filterName string)
 }
 
 type Pipeline struct {
-	stages            []PipelineStage
+	filters           []kitpolicy.Filter
 	rejectionHandlers []RejectionHandler
 	rejectionLevels   map[string]config.LogLevel
-	collector         MetricsCollector
 
 	// mu keeps Close from closing filters under a running ProcessEvent and
 	// stops WaitGroup misuse when events arrive during shutdown.
@@ -39,15 +41,13 @@ type Pipeline struct {
 
 func NewPipeline(
 	cfg *config.Config,
-	stages []PipelineStage,
+	filters []kitpolicy.Filter,
 	handlers []RejectionHandler,
-	collector MetricsCollector,
 ) *Pipeline {
 	return &Pipeline{
-		stages:            stages,
+		filters:           filters,
 		rejectionHandlers: handlers,
 		rejectionLevels:   cfg.Log.RejectionLevels,
-		collector:         collector,
 		closeDone:         make(chan struct{}),
 	}
 }
@@ -84,17 +84,13 @@ func (p *Pipeline) ProcessEvent(
 		"dry_run":   dryRun,
 	}
 
-	for _, stage := range p.stages {
-		res, filterErr := stage.Filter.Match(ctx, event, meta)
+	for _, filter := range p.filters {
+		res, filterErr := filter.Match(ctx, event, meta)
 		if filterErr != nil {
 			slog.Error("Filter execution failed", "error", filterErr, "filter_name", res.Filter, "event_id", eventID)
 			return PolicyResponse{ID: eventID, Action: "reject", Msg: "An internal error occurred while running filter " + res.Filter + "."}, filterErr
 		}
 		logReputationObservation(event, meta)
-
-		if p.collector != nil {
-			p.collector.Report(res)
-		}
 
 		if !res.Allowed {
 			message := "Event rejected by filter"
@@ -103,6 +99,7 @@ func (p *Pipeline) ProcessEvent(
 				// Forwarding an unknown author's event is not IP abuse. Keep
 				// social-policy diagnostics out of the Fail2Ban input stream.
 				message = "Event rejected by reputation policy"
+				logAttrs = append(logAttrs, reputationDiagnosticAttrs(meta)...)
 			} else {
 				logAttrs = append(logAttrs, slog.String("remote_ip", remoteIP))
 			}
@@ -152,10 +149,10 @@ func (p *Pipeline) Close() error {
 	done := p.closeDone
 	p.mu.Unlock()
 
-	for _, stage := range p.stages {
-		if closer, ok := stage.Filter.(interface{ Close() error }); ok {
+	for _, filter := range p.filters {
+		if closer, ok := filter.(interface{ Close() error }); ok {
 			if err := closer.Close(); err != nil {
-				slog.Error("Failed to close a filter component", "filter", stage.Filter, "error", err)
+				slog.Error("Failed to close a filter component", "filter", filter, "error", err)
 			}
 		}
 	}
@@ -169,4 +166,42 @@ func (p *Pipeline) Close() error {
 
 	close(done)
 	return nil
+}
+
+func logReputationObservation(event *nostr.Event, meta map[string]any) {
+	assessment, ok := meta[kitpolicy.ReputationObservationKey].(kitrep.Assessment)
+	if !ok {
+		return
+	}
+	delete(meta, kitpolicy.ReputationObservationKey)
+	// This is deliberately not an "Event rejected by filter" log record and has
+	// no remote IP: observation must not feed the production Fail2Ban jails.
+	details := reputationDiagnosticAttrs(meta)
+	if len(details) == 0 {
+		// Preserve observation metadata compatibility for standalone producers.
+		details = []slog.Attr{
+			slog.Bool("known", assessment.Known), slog.Float64("pagerank", assessment.Score.PageRank),
+			slog.Float64("trustrank", assessment.Score.TrustRank),
+		}
+	}
+	attrs := []slog.Attr{
+		slog.Bool("would_reject", true), slog.String("event_id", event.ID.Hex()),
+		slog.String("pubkey", event.PubKey.Hex()), slog.Int("kind", int(event.Kind)),
+	}
+	slog.LogAttrs(nil, slog.LevelInfo, "Reputation observation", append(attrs, details...)...)
+}
+
+func reputationDiagnosticAttrs(meta map[string]any) []slog.Attr {
+	diagnostic, ok := meta[kitpolicy.ReputationDiagnosticKey].(kitpolicy.ReputationDiagnostic)
+	if !ok {
+		return nil
+	}
+	delete(meta, kitpolicy.ReputationDiagnosticKey)
+	return []slog.Attr{
+		slog.Bool("known", diagnostic.Assessment.Known),
+		slog.Float64("pagerank", diagnostic.Assessment.Score.PageRank),
+		slog.Float64("trustrank", diagnostic.Assessment.Score.TrustRank),
+		slog.Float64("min_pagerank", diagnostic.MinPageRank),
+		slog.Float64("min_trustrank", diagnostic.MinTrustRank),
+	}
 }

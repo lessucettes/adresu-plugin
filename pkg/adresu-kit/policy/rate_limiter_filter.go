@@ -113,7 +113,7 @@ func (f *RateLimiterFilter) Match(_ context.Context, event *nostr.Event, meta ma
 
 	userKeys := make([]limiterKey, 0, 2)
 	remoteIP, _ := meta["remote_ip"].(string)
-	pubkey := authorKey(event)
+	pubkey := event.PubKey
 
 	switch f.by {
 	case config.RateByIP:

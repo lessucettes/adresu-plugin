@@ -1,7 +1,6 @@
 package reputation
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -160,11 +159,4 @@ func parseRelayListURL(raw string) (string, bool) {
 		return "", false
 	}
 	return relay, true
-}
-
-// newerRelayList applies replaceable-event ordering: newest created_at wins,
-// then the lexicographically lower event id.
-func newerRelayList(a, b RelayList) bool {
-	return a.CreatedAt > b.CreatedAt ||
-		(a.CreatedAt == b.CreatedAt && bytes.Compare(a.EventID[:], b.EventID[:]) < 0)
 }

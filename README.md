@@ -2,7 +2,7 @@
 
 A policy plugin for the [strfry](https://github.com/hoytech/strfry) Nostr relay (though it can be used with any other relay after small adjustments).
 
-This plugin acts as an orchestration layer for the filter library [Adresu Kit](https://github.com/lessucettes/adresu-plugin/tree/main/pkg/adresu-kit). It extends the stateless filtering capabilities of the library with stateful moderation tools that require direct integration with a database and the `strfry` command-line interface. With Adresu Plugin, relay operators can enforce fine-grained policies for event acceptance, protect their servers from spam and abuse, and cultivate a higher-quality, safer environment for their users. 
+This plugin orchestrates [Adresu Kit](pkg/adresu-kit/README.md), a reusable in-process filter library, and adds persistent moderation through Badger and the `strfry` command-line interface. Kit filters can maintain local rate limits and caches, but do not depend on this plugin, its database, or strfry.
 
 ---
 
@@ -101,6 +101,27 @@ Two process-wide settings are applied only at startup and require a restart: `da
 `-validate` is not a read-only syntax check. It opens (and may create) the configured Badger database and builds the full filter pipeline, including the language-detection models. Point it at a disposable database path rather than the one used by a running relay.
 
 -----
+
+## Development and package boundaries
+
+- `cmd/adresu-plugin`: CLI, filter construction, reload lifecycle and stdin/stdout protocol. Platform-specific stdin files keep inherited-pipe cancellation portable.
+- `internal/config`: plugin TOML loading, defaults, validation and file watching.
+- `internal/policy`: plugin pipeline, bans, moderation and autoban.
+- `internal/reputation`: relay collection, discovery safety, authentication and background snapshot management.
+- `internal/store`: Badger transactions and persistence formats; snapshot loading and saving remain separate operations.
+- `internal/strfry`: subprocess adapter for event deletion.
+- `pkg/adresu-kit`: public, reusable `cache`, `config`, `nip`, `policy` and `reputation` packages. These must not import `internal/` or `cmd/`; see the [library guide](pkg/adresu-kit/README.md).
+
+Run from the repository root:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+go build ./cmd/adresu-plugin
+```
+
+Keep files organized by responsibility, not by the change that introduced them. Small regression checks belong beside the component's existing tests; separate files are useful for distinct security, lifecycle, platform or persistence boundaries. Removing an unused private helper does not justify removing a public kit API merely because the plugin does not call it.
 
 ## 📄 License
 

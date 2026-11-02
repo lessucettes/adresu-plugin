@@ -61,7 +61,7 @@ func (f *EmergencyFilter) Match(_ context.Context, ev *nostr.Event, meta map[str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	pk := authorKey(ev)
+	pk := ev.PubKey
 	if pk == nostr.ZeroPK {
 		return newResult(true, "Event has no public key; new-key rate check was skipped.", nil)
 	}

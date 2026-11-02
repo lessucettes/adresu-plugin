@@ -132,15 +132,21 @@ func TestParseRelayListRejectsOversizedRaw(t *testing.T) {
 	}
 }
 
-func TestNewerRelayListUsesTieBreak(t *testing.T) {
-	older := RelayList{CreatedAt: 10, EventID: nostr.ID{1}}
-	newer := RelayList{CreatedAt: 11, EventID: nostr.ID{2}}
-	tieLow := RelayList{CreatedAt: 11, EventID: nostr.ID{1}}
-	tieHigh := RelayList{CreatedAt: 11, EventID: nostr.ID{2}}
-	if !newerRelayList(newer, older) || newerRelayList(older, newer) {
-		t.Fatal("created_at ordering is wrong")
+func TestRelayMetadataBoundsCachedURLLength(t *testing.T) {
+	event := signedRelayListEvent(t, nostr.Tags{
+		{"r", "wss://relay.example/" + strings.Repeat("x", 2048)},
+		{"r", "wss://relay.example/" + strings.Repeat("é", 512)},
+		{"r", "wss://usable.example"},
+	})
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !newerRelayList(tieLow, tieHigh) || newerRelayList(tieHigh, tieLow) {
-		t.Fatal("event-id tie break is wrong")
+	list, err := ParseRelayList(context.Background(), raw, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.WriteRelays) != 1 || list.WriteRelays[0] != "wss://usable.example" {
+		t.Fatalf("oversized URL retained: count=%d", len(list.WriteRelays))
 	}
 }

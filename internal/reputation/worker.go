@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"github.com/lessucettes/adresu-plugin/internal/config"
 	kitrep "github.com/lessucettes/adresu-plugin/pkg/adresu-kit/reputation"
 )
 
@@ -36,7 +37,7 @@ func (m *Manager) run(ctx context.Context, active *view, seeds []nostr.PubKey, s
 			// Leave a full collection/persistence budget before the oldest
 			// receipt expires, even when max_age equals refresh_interval.
 			snapshot := active.snapshot.Load()
-			refreshIn := time.Until(snapshot.ValidUntil) - refreshBudget(active)
+			refreshIn := time.Until(snapshot.ValidUntil) - refreshBudget(active.cfg)
 			if refreshIn <= 0 {
 				// Cached-only success may not advance ValidUntil. Retry soon,
 				// but never turn a near-expiry snapshot into a tight loop.
@@ -54,13 +55,13 @@ func (m *Manager) run(ctx context.Context, active *view, seeds []nostr.PubKey, s
 	}
 }
 
-func refreshBudget(active *view) time.Duration {
-	return min(15*time.Minute, active.cfg.RefreshInterval, active.cfg.MaxAge/2)
+func refreshBudget(cfg config.ReputationConfig) time.Duration {
+	return min(15*time.Minute, cfg.RefreshInterval, cfg.MaxAge/2)
 }
 
 func (m *Manager) refresh(ctx context.Context, active *view, seeds []nostr.PubKey, source Source) error {
 	// A per-relay timeout does not bound a whole BFS with many batches.
-	ctx, cancel := context.WithTimeout(ctx, refreshBudget(active))
+	ctx, cancel := context.WithTimeout(ctx, refreshBudget(active.cfg))
 	defer cancel()
 	lists, coverage, validUntil, err := collect(ctx, active.cfg, seeds, source, m.store)
 	if err != nil {

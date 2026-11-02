@@ -113,12 +113,12 @@ func reputationReader(manager *repservice.Manager, cfg *config.Config) (kitrep.R
 func buildPipeline(cfg *config.Config, db store.Store, reputationReader kitrep.Reader) (*policy.Pipeline, error) {
 	strfryClient := strfry.NewClient(cfg.Strfry.ExecutablePath, cfg.Strfry.ConfigPath)
 
-	var stages []policy.PipelineStage
+	var filters []kitpolicy.Filter
 	var rejectionHandlers []policy.RejectionHandler
 	built := false
 	defer func() {
 		if !built {
-			_ = policy.NewPipeline(cfg, stages, rejectionHandlers, nil).Close()
+			_ = policy.NewPipeline(cfg, filters, rejectionHandlers).Close()
 		}
 	}()
 
@@ -150,7 +150,7 @@ func buildPipeline(cfg *config.Config, db store.Store, reputationReader kitrep.R
 			return nil, fmt.Errorf("failed to create kit filter '%s': %w", factory.name, err)
 		}
 		if filter != nil {
-			stages = append(stages, policy.PipelineStage{Filter: filter})
+			filters = append(filters, filter)
 		}
 	}
 
@@ -158,13 +158,13 @@ func buildPipeline(cfg *config.Config, db store.Store, reputationReader kitrep.R
 	if err != nil {
 		return nil, fmt.Errorf("failed to create BannedAuthorFilter: %w", err)
 	}
-	stages = append(stages, policy.PipelineStage{Filter: bannedAuthorFilter})
+	filters = append(filters, bannedAuthorFilter)
 
 	reputationFilter, err := kitpolicy.NewReputationFilter(&cfg.Filters.Reputation, reputationReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ReputationFilter: %w", err)
 	}
-	stages = append(stages, policy.PipelineStage{Filter: reputationFilter})
+	filters = append(filters, reputationFilter)
 
 	moderationFilter, err := policy.NewModerationFilter(
 		cfg.Policy.ModeratorPubKey, cfg.Policy.BanEmoji, cfg.Policy.UnbanEmoji, db, strfryClient, cfg.Policy.BanDuration,
@@ -172,7 +172,7 @@ func buildPipeline(cfg *config.Config, db store.Store, reputationReader kitrep.R
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ModerationFilter: %w", err)
 	}
-	stages = append(stages, policy.PipelineStage{Filter: moderationFilter})
+	filters = append(filters, moderationFilter)
 
 	autoBanFilter, err := policy.NewAutoBanFilter(db, &cfg.Filters.AutoBan)
 	if err != nil {
@@ -180,8 +180,7 @@ func buildPipeline(cfg *config.Config, db store.Store, reputationReader kitrep.R
 	}
 	rejectionHandlers = []policy.RejectionHandler{autoBanFilter}
 
-	var metricsCollector policy.MetricsCollector = nil
-	pipeline := policy.NewPipeline(cfg, stages, rejectionHandlers, metricsCollector)
+	pipeline := policy.NewPipeline(cfg, filters, rejectionHandlers)
 	built = true
 
 	return pipeline, nil

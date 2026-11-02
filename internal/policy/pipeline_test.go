@@ -84,7 +84,7 @@ func (h *recordingHandler) handledCount() int {
 func TestPipelineClosesStagesAndHandlers(t *testing.T) {
 	filter := &recordingFilter{}
 	handler := &recordingHandler{}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, []RejectionHandler{handler}, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, []RejectionHandler{handler})
 
 	if err := pipeline.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -110,7 +110,7 @@ func TestPipelineClosesStagesAndHandlers(t *testing.T) {
 
 func TestPipelineRejectsEventsAfterClose(t *testing.T) {
 	filter := &recordingFilter{}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, nil, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, nil)
 	if err := pipeline.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestPipelineRejectsEventsAfterClose(t *testing.T) {
 
 func TestPipelineExposesDryRunMetadata(t *testing.T) {
 	filter := &recordingFilter{}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, nil, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, nil)
 	defer pipeline.Close()
 
 	event := &nostr.Event{ID: nostr.ID{2}}
@@ -151,7 +151,7 @@ func TestPipelineDryRunAcceptsWithoutHandlers(t *testing.T) {
 		return kitpolicy.FilterResult{Allowed: false, Filter: "RecordingFilter", Reason: "denied"}, nil
 	}}
 	handler := &recordingHandler{}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, []RejectionHandler{handler}, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, []RejectionHandler{handler})
 	defer pipeline.Close()
 
 	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{3}}, "", true)
@@ -171,7 +171,7 @@ func TestPipelineRunsHandlersOnRejection(t *testing.T) {
 		return kitpolicy.FilterResult{Allowed: false, Filter: "RecordingFilter", Reason: "denied"}, nil
 	}}
 	handler := &recordingHandler{}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, []RejectionHandler{handler}, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, []RejectionHandler{handler})
 	defer pipeline.Close()
 
 	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{4}}, "", false)
@@ -192,7 +192,7 @@ func TestPipelineFilterErrorRejectsWithoutHandlers(t *testing.T) {
 		return kitpolicy.FilterResult{Filter: "RecordingFilter"}, filterErr
 	}}
 	handler := &recordingHandler{}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, []RejectionHandler{handler}, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, []RejectionHandler{handler})
 	defer pipeline.Close()
 
 	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{5}}, "", false)
@@ -211,7 +211,7 @@ func TestPipelineRecoversFilterPanic(t *testing.T) {
 	filter := &recordingFilter{match: func(*nostr.Event) (kitpolicy.FilterResult, error) {
 		panic("boom")
 	}}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, nil, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, nil)
 	defer pipeline.Close()
 
 	result, err := pipeline.ProcessEvent(context.Background(), &nostr.Event{ID: nostr.ID{6}}, "", false)
@@ -227,7 +227,7 @@ func TestPipelineCloseWaitsForInFlightEvent(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	filter := &recordingFilter{started: started, block: release}
-	pipeline := NewPipeline(&config.Config{}, []PipelineStage{{Filter: filter}}, nil, nil)
+	pipeline := NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, nil)
 
 	eventDone := make(chan PolicyResponse, 1)
 	go func() {

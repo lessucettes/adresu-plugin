@@ -49,7 +49,7 @@ func installTestFilter(t *testing.T, filter kitpolicy.Filter) {
 	t.Helper()
 	pipelineMutex.Lock()
 	previous := currentPipeline
-	currentPipeline = policy.NewPipeline(&config.Config{}, []policy.PipelineStage{{Filter: filter}}, nil, nil)
+	currentPipeline = policy.NewPipeline(&config.Config{}, []kitpolicy.Filter{filter}, nil)
 	pipelineMutex.Unlock()
 	t.Cleanup(func() {
 		pipelineMutex.Lock()
