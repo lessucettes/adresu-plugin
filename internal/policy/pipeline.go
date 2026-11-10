@@ -180,7 +180,7 @@ func logReputationObservation(event *nostr.Event, meta map[string]any) {
 	if len(details) == 0 {
 		// Preserve observation metadata compatibility for standalone producers.
 		details = []slog.Attr{
-			slog.Bool("known", assessment.Known), slog.Float64("pagerank", assessment.Score.PageRank),
+			slog.Bool("known", assessment.Known),
 			slog.Float64("trustrank", assessment.Score.TrustRank),
 		}
 	}
@@ -199,9 +199,7 @@ func reputationDiagnosticAttrs(meta map[string]any) []slog.Attr {
 	delete(meta, kitpolicy.ReputationDiagnosticKey)
 	return []slog.Attr{
 		slog.Bool("known", diagnostic.Assessment.Known),
-		slog.Float64("pagerank", diagnostic.Assessment.Score.PageRank),
 		slog.Float64("trustrank", diagnostic.Assessment.Score.TrustRank),
-		slog.Float64("min_pagerank", diagnostic.MinPageRank),
 		slog.Float64("min_trustrank", diagnostic.MinTrustRank),
 	}
 }

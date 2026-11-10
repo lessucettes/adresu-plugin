@@ -73,7 +73,7 @@ func (s *BadgerStore) LoadReputationSnapshot(ctx context.Context) (*reputation.S
 				if _, duplicate := scores[pubkey]; duplicate {
 					return fmt.Errorf("snapshot chunk %d record %d duplicates pubkey %s", index, recordIndex, pubkey.Hex())
 				}
-				score := reputation.Score{PageRank: record.PageRank, TrustRank: record.TrustRank}
+				score := reputation.Score{TrustRank: record.TrustRank}
 				if err := validateReputationScore(score); err != nil {
 					return fmt.Errorf("snapshot chunk %d record %d: %w", index, recordIndex, err)
 				}

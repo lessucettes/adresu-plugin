@@ -12,7 +12,7 @@ Import individual Go packages, not `pkg/adresu-kit` itself:
 | `config` | Filter settings, constructible directly in Go; TOML tags do not require a TOML loader |
 | `nip` | NIP-13 proof of work, NIP-26 delegation, canonical IDs and signature helpers |
 | `policy` | Composable filters implementing `Filter.Match` |
-| `reputation` | Verified follow/relay-list parsing, graph construction, PageRank and TrustRank, reader and snapshot types |
+| `reputation` | Verified follow/relay-list parsing, graph construction, TrustRank, reader and snapshot types |
 
 The kit is part of the root module `github.com/lessucettes/adresu-plugin`, not a nested module with an independent version. Pin a root-module revision that contains the kit; older plugin releases may predate it. Existing import paths remain usable from another module. For local development, a consumer can use:
 
@@ -83,7 +83,7 @@ A nil metadata map is valid. Otherwise, create a fresh map for each event and pa
 
 ## Reputation without the plugin
 
-`policy.NewReputationFilter` accepts a `reputation.Reader`. Implement its nonblocking `Lookup(nostr.PubKey) reputation.Assessment` method using your own in-memory snapshot. An enabled filter requires a reader; a disabled one does not. `Ready == false` fails open, while `Known == false` in a ready snapshot is a would-reject/reject assessment depending on the configured mode. The default mode is `observe`. Both score thresholds must pass in enforce mode; NIP-01 ephemeral kinds bypass reputation.
+`policy.NewReputationFilter` accepts a `reputation.Reader`. Implement its nonblocking `Lookup(nostr.PubKey) reputation.Assessment` method using your own in-memory snapshot. An enabled filter requires a reader; a disabled one does not. `Ready == false` fails open, while `Known == false` in a ready snapshot is a would-reject/reject assessment depending on the configured mode. The default mode is `observe`. A known author must meet the TrustRank threshold in enforce mode; NIP-01 ephemeral kinds bypass reputation.
 
 To build scores yourself, parse signed kind-3 events with `reputation.ParseFollowList`, then pass verified lists and explicit seeds to `reputation.Calculate` with `reputation.Options`. The application owns network access, input node/edge limits, refresh scheduling, persistence, coverage and expiry; `Calculate` does not collect data or publish snapshots. Published score maps must be treated as immutable. `ParseRelayList` verifies and extracts NIP-65 write URLs, but URL parsing is not SSRF protection: apply your own DNS/address/redirect policy before connecting to untrusted endpoints.
 

@@ -34,9 +34,9 @@ func TestReputationMessagesSeparateClientTextFromDiagnostics(t *testing.T) {
 				t.Cleanup(func() { slog.SetDefault(previous) })
 				assessment := kitrep.Assessment{Ready: true, Known: known}
 				if known {
-					assessment.Score = kitrep.Score{PageRank: 0.05, TrustRank: 4.394921967211787e-7}
+					assessment.Score = kitrep.Score{TrustRank: 4.394921967211787e-7}
 				}
-				cfg := &kitconfig.ReputationFilterConfig{Enabled: true, Mode: "enforce", MinPageRank: 0.1, MinTrustRank: 1e-6}
+				cfg := &kitconfig.ReputationFilterConfig{Enabled: true, Mode: "enforce", MinTrustRank: 1e-6}
 				if mode == "observe" {
 					cfg.Mode = mode
 				}
@@ -72,11 +72,16 @@ func TestReputationMessagesSeparateClientTextFromDiagnostics(t *testing.T) {
 					}
 					count++
 					for key, want := range map[string]any{
-						"known": known, "pagerank": assessment.Score.PageRank, "trustrank": assessment.Score.TrustRank,
-						"min_pagerank": cfg.MinPageRank, "min_trustrank": cfg.MinTrustRank,
+						"known": known, "trustrank": assessment.Score.TrustRank,
+						"min_trustrank": cfg.MinTrustRank,
 					} {
 						if record[key] != want {
 							t.Errorf("log %s = %v, want %v", key, record[key], want)
+						}
+					}
+					for _, removed := range []string{"pagerank", "min_pagerank"} {
+						if _, exists := record[removed]; exists {
+							t.Errorf("log contains removed field %q", removed)
 						}
 					}
 					if record["remote_ip"] != nil {

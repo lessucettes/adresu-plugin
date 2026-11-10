@@ -349,7 +349,7 @@ func TestReputationStorageNamespaceIsolation(t *testing.T) {
 		Coverage:     1,
 		Nodes:        1,
 		Edges:        0,
-		Scores:       map[nostr.PubKey]reputation.Score{author: {PageRank: 0.5, TrustRank: 0.5}},
+		Scores:       map[nostr.PubKey]reputation.Score{author: {TrustRank: 0.5}},
 	}
 	if err := s.SaveReputationSnapshot(ctx, snapshot); err != nil {
 		t.Fatalf("SaveReputationSnapshot: %v", err)

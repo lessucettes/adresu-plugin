@@ -57,13 +57,9 @@ func assertClose(t *testing.T, name string, got, want float64) {
 
 func assertMass(t *testing.T, result *reputation.Result) {
 	t.Helper()
-	var pageRank, trustRank float64
+	var trustRank float64
 	for _, score := range result.Scores {
-		pageRank += score.PageRank
 		trustRank += score.TrustRank
-	}
-	if math.Abs(pageRank-1) > 1e-12 {
-		t.Errorf("pagerank mass = %.15f, want 1", pageRank)
 	}
 	if math.Abs(trustRank-1) > 1e-12 {
 		t.Errorf("trustrank mass = %.15f, want 1", trustRank)
@@ -88,13 +84,9 @@ func TestCalculateKnownGraphs(t *testing.T) {
 			t.Fatalf("graph = %d nodes, %d edges, want 3 nodes, 4 edges", result.Nodes, result.Edges)
 		}
 
-		centerPR := ((1-damping)/3 + damping) / (1 + damping)
-		leafPR := (1 - centerPR) / 2
 		centerTR := (1 - damping) / (1 - damping*damping)
 		leafTR := damping * centerTR / 2
 
-		assertClose(t, "pagerank(center)", scoreOf(t, result, pubKey('a')).PageRank, centerPR)
-		assertClose(t, "pagerank(leaf)", scoreOf(t, result, pubKey('b')).PageRank, leafPR)
 		assertClose(t, "trustrank(center)", scoreOf(t, result, pubKey('a')).TrustRank, centerTR)
 		assertClose(t, "trustrank(leaf)", scoreOf(t, result, pubKey('b')).TrustRank, leafTR)
 		assertMass(t, result)
@@ -112,9 +104,6 @@ func TestCalculateKnownGraphs(t *testing.T) {
 		}
 
 		seedTR := (1 - damping) / (1 - math.Pow(damping, 3))
-		for _, key := range []byte{'a', 'b', 'c'} {
-			assertClose(t, "pagerank", scoreOf(t, result, pubKey(key)).PageRank, 1.0/3)
-		}
 		assertClose(t, "trustrank(seed)", scoreOf(t, result, pubKey('a')).TrustRank, seedTR)
 		assertClose(t, "trustrank(next)", scoreOf(t, result, pubKey('b')).TrustRank, damping*seedTR)
 		assertClose(t, "trustrank(last)", scoreOf(t, result, pubKey('c')).TrustRank, damping*damping*seedTR)
@@ -167,11 +156,30 @@ func TestDisconnectedSybilComponentHasZeroTrust(t *testing.T) {
 		if score.TrustRank != 0 {
 			t.Errorf("sybil %c trustrank = %v, want exactly 0", key, score.TrustRank)
 		}
-		if score.PageRank <= 0 {
-			t.Errorf("sybil %c pagerank = %v, want positive", key, score.PageRank)
-		}
 	}
 	assertMass(t, result)
+}
+
+func TestStationaryTrustIgnoresDisconnectedComponent(t *testing.T) {
+	opts := reputation.DefaultOptions()
+	opts.MaxIterations = 1
+	lists := []reputation.FollowList{
+		followList('a', 100, 1),
+		followList('x', 100, 2, 'y'),
+		followList('y', 100, 3, 'x'),
+	}
+	// All trust stays at the dangling seed. An unrelated component must not
+	// require extra iterations or prevent this complete result from publishing.
+	result, err := reputation.Calculate(context.Background(), lists, []nostr.PubKey{pubKey('a')}, opts)
+	if err != nil {
+		t.Fatalf("stationary trust failed to converge in one iteration: %v", err)
+	}
+	assertClose(t, "seed trust", scoreOf(t, result, pubKey('a')).TrustRank, 1)
+	for _, key := range []byte{'x', 'y'} {
+		if trust := scoreOf(t, result, pubKey(key)).TrustRank; trust != 0 {
+			t.Errorf("disconnected node %c trust = %v, want 0", key, trust)
+		}
+	}
 }
 
 func TestSeedFairnessAndDedup(t *testing.T) {
@@ -186,7 +194,6 @@ func TestSeedFairnessAndDedup(t *testing.T) {
 	}
 	for _, key := range []byte{'a', 'b'} {
 		score := scoreOf(t, result, pubKey(key))
-		assertClose(t, "pagerank", score.PageRank, 0.5)
 		assertClose(t, "trustrank", score.TrustRank, 0.5)
 	}
 
@@ -209,7 +216,6 @@ func TestZeroSeedsAreIgnored(t *testing.T) {
 		t.Fatalf("nodes = %d, want 1", result.Nodes)
 	}
 	score := scoreOf(t, result, pubKey('a'))
-	assertClose(t, "pagerank", score.PageRank, 1)
 	assertClose(t, "trustrank", score.TrustRank, 1)
 	if _, ok := result.Scores[nostr.PubKey{}]; ok {
 		t.Error("zero pubkey became a node")
@@ -273,24 +279,6 @@ func TestNonConvergenceReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "did not converge") {
 		t.Errorf("error = %q, want convergence failure", err)
-	}
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
-	}
-}
-
-func TestTrustRankFailureReturnsError(t *testing.T) {
-	// Uniform PageRank is already stationary on a directed cycle, so this
-	// fails in the TrustRank run after PageRank converges.
-	opts := reputation.Options{Damping: 0.85, Tolerance: 1e-15, MaxIterations: 1}
-	lists := []reputation.FollowList{
-		followList('a', 100, 1, 'b'),
-		followList('b', 100, 2, 'c'),
-		followList('c', 100, 3, 'a'),
-	}
-	result, err := reputation.Calculate(context.Background(), lists, []nostr.PubKey{pubKey('a')}, opts)
-	if err == nil {
-		t.Fatal("expected trustrank convergence error")
 	}
 	if !strings.Contains(err.Error(), "trustrank") {
 		t.Errorf("error = %q, want trustrank failure", err)

@@ -11,7 +11,7 @@ const (
 	// rejecting their events. It is the safe default.
 	ReputationModeObserve = "observe"
 	// ReputationModeEnforce rejects events from authors that are unknown in a
-	// ready snapshot or fall below either configured score minimum.
+	// ready snapshot or fall below the configured TrustRank minimum.
 	ReputationModeEnforce = "enforce"
 )
 
@@ -20,7 +20,6 @@ const (
 type ReputationFilterConfig struct {
 	Enabled      bool    `toml:"enabled"`
 	Mode         string  `toml:"mode"`
-	MinPageRank  float64 `toml:"min_pagerank"`
 	MinTrustRank float64 `toml:"min_trustrank"`
 }
 
@@ -40,17 +39,14 @@ func NormalizeReputationMode(mode string) string {
 	return normalized
 }
 
-// Validate checks the mode and both score thresholds. Thresholds are raw
-// scores in [0,1]; they are not percentages. Zero is valid and means graph
-// membership only, which is not Sybil-resistant.
+// Validate checks the mode and the TrustRank threshold. The threshold is a raw
+// score in [0,1], not a percentage. Zero is valid and means graph membership
+// only, which is not Sybil-resistant.
 func (c ReputationFilterConfig) Validate() error {
 	switch NormalizeReputationMode(c.Mode) {
 	case ReputationModeObserve, ReputationModeEnforce:
 	default:
 		return fmt.Errorf("reputation.mode must be %q or %q, got %q", ReputationModeObserve, ReputationModeEnforce, c.Mode)
-	}
-	if err := validateReputationThreshold("min_pagerank", c.MinPageRank); err != nil {
-		return err
 	}
 	return validateReputationThreshold("min_trustrank", c.MinTrustRank)
 }

@@ -23,9 +23,9 @@ func DefaultOptions() Options {
 	}
 }
 
-// Calculate builds the local follow graph and ranks it with one PageRank and
-// one seed-restarted TrustRank power iteration. It returns an error instead of
-// partial scores when a run fails to converge.
+// Calculate builds the local follow graph and ranks it with a seed-restarted
+// TrustRank power iteration. It returns an error instead of partial scores
+// when a run fails to converge.
 func Calculate(ctx context.Context, lists []FollowList, seeds []nostr.PubKey, opts Options) (*Result, error) {
 	if err := validateOptions(opts); err != nil {
 		return nil, err
@@ -39,15 +39,6 @@ func Calculate(ctx context.Context, lists []FollowList, seeds []nostr.PubKey, op
 		return nil, fmt.Errorf("reputation: build graph: %w", err)
 	}
 
-	uniform := make([]float64, len(g.nodes))
-	for i := range uniform {
-		uniform[i] = 1 / float64(len(g.nodes))
-	}
-	pageRank, err := powerIteration(ctx, g, opts, uniform)
-	if err != nil {
-		return nil, fmt.Errorf("reputation: pagerank: %w", err)
-	}
-
 	trustRestart := make([]float64, len(g.nodes))
 	for _, seed := range g.seeds {
 		trustRestart[seed] = 1 / float64(len(g.seeds))
@@ -59,7 +50,7 @@ func Calculate(ctx context.Context, lists []FollowList, seeds []nostr.PubKey, op
 
 	scores := make(map[nostr.PubKey]Score, len(g.nodes))
 	for i, key := range g.nodes {
-		scores[key] = Score{PageRank: pageRank[i], TrustRank: trustRank[i]}
+		scores[key] = Score{TrustRank: trustRank[i]}
 	}
 	return &Result{Scores: scores, Nodes: len(g.nodes), Edges: len(g.targets)}, nil
 }
@@ -87,7 +78,7 @@ func countUniqueSeeds(seeds []nostr.PubKey) int {
 	return len(unique)
 }
 
-// powerIteration is the shared PageRank/TrustRank kernel. restart is a
+// powerIteration computes TrustRank. restart is a seed-only
 // normalized probability vector: the damping loss and dangling mass both
 // return to it, so total mass stays at one.
 func powerIteration(ctx context.Context, g *graph, opts Options, restart []float64) ([]float64, error) {

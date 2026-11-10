@@ -60,10 +60,10 @@ type snapshotManifest struct {
 
 // scoreRecord keeps binary public keys out of JSON maps. Chunks are arrays of
 // these records, in no particular order; completeness is enforced by the
-// manifest's score count and digest.
+// manifest's score count and digest. Older chunks may contain extra score
+// fields; the loader ignores them and verifies the digest of the original bytes.
 type scoreRecord struct {
 	PubKey    string  `json:"pubkey"`
-	PageRank  float64 `json:"page_rank"`
 	TrustRank float64 `json:"trust_rank"`
 }
 
@@ -124,9 +124,6 @@ func validCoverage(coverage float64) bool {
 }
 
 func validateReputationScore(score reputation.Score) error {
-	if !finiteNonNegative(score.PageRank) {
-		return fmt.Errorf("page rank must be finite and nonnegative, got %v", score.PageRank)
-	}
 	if !finiteNonNegative(score.TrustRank) {
 		return fmt.Errorf("trust rank must be finite and nonnegative, got %v", score.TrustRank)
 	}

@@ -90,8 +90,8 @@ func TestReputationDefaults(t *testing.T) {
 	if cfg.Filters.Reputation.Mode != kitconfig.ReputationModeObserve {
 		t.Fatalf("reputation mode = %q, want %q", cfg.Filters.Reputation.Mode, kitconfig.ReputationModeObserve)
 	}
-	if cfg.Filters.Reputation.MinPageRank != 0 || cfg.Filters.Reputation.MinTrustRank != 0 {
-		t.Fatalf("reputation thresholds = %v/%v, want zero", cfg.Filters.Reputation.MinPageRank, cfg.Filters.Reputation.MinTrustRank)
+	if cfg.Filters.Reputation.MinTrustRank != 0 {
+		t.Fatalf("reputation min_trustrank = %v, want zero", cfg.Filters.Reputation.MinTrustRank)
 	}
 }
 
@@ -120,7 +120,6 @@ max_iterations = 300
 [filters.reputation]
 enabled = true
 mode = "enforce"
-min_pagerank = 0.001
 min_trustrank = 0.002
 `)
 
@@ -150,8 +149,8 @@ min_trustrank = 0.002
 	if !cfg.Filters.Reputation.Enabled || cfg.Filters.Reputation.Mode != kitconfig.ReputationModeEnforce {
 		t.Errorf("filter config = %+v", cfg.Filters.Reputation)
 	}
-	if cfg.Filters.Reputation.MinPageRank != 0.001 || cfg.Filters.Reputation.MinTrustRank != 0.002 {
-		t.Errorf("thresholds = %v/%v", cfg.Filters.Reputation.MinPageRank, cfg.Filters.Reputation.MinTrustRank)
+	if cfg.Filters.Reputation.MinTrustRank != 0.002 {
+		t.Errorf("min_trustrank = %v, want 0.002", cfg.Filters.Reputation.MinTrustRank)
 	}
 }
 
@@ -195,7 +194,6 @@ min_coverage = 4
 [filters.reputation]
 enabled = false
 mode = "observe"
-min_pagerank = 0
 min_trustrank = 0
 `)
 
@@ -213,14 +211,13 @@ unban_emoji = ""
 [filters.reputation]
 enabled = false
 mode = "not-a-mode"
-min_pagerank = -1
 `)
 
 	_, _, err := Load(path, false)
 	if err == nil {
 		t.Fatal("disabled filter with an invalid mode was accepted")
 	}
-	if !strings.Contains(err.Error(), "reputation.mode") && !strings.Contains(err.Error(), "reputation.min_pagerank") {
+	if !strings.Contains(err.Error(), "reputation.mode") {
 		t.Fatalf("error = %q, want a reputation filter configuration error", err)
 	}
 }
@@ -302,7 +299,7 @@ func TestReputationRejectsInvalidFilterConfig(t *testing.T) {
 		want   string
 	}{
 		{"unknown mode", `mode = "bogus"`, "reputation.mode"},
-		{"negative pagerank", `min_pagerank = -0.1`, "reputation.min_pagerank"},
+		{"negative trustrank", `min_trustrank = -0.1`, "reputation.min_trustrank"},
 		{"trustrank above one", `min_trustrank = 1.1`, "reputation.min_trustrank"},
 	}
 
@@ -325,7 +322,7 @@ func TestReputationRejectsNonFiniteThresholds(t *testing.T) {
 		name string
 		set  func(*kitconfig.ReputationFilterConfig)
 	}{
-		{"nan pagerank", func(cfg *kitconfig.ReputationFilterConfig) { cfg.MinPageRank = math.NaN() }},
+		{"nan trustrank", func(cfg *kitconfig.ReputationFilterConfig) { cfg.MinTrustRank = math.NaN() }},
 		{"infinite trustrank", func(cfg *kitconfig.ReputationFilterConfig) { cfg.MinTrustRank = math.Inf(1) }},
 	}
 
@@ -380,11 +377,25 @@ max_iterations = 10000
 [filters.reputation]
 enabled = true
 mode = "observe"
-min_pagerank = 0
 min_trustrank = 1
 `)
 
 	if _, _, err := Load(path, false); err != nil {
 		t.Fatalf("boundary reputation configuration was rejected: %v", err)
+	}
+}
+
+func TestReputationRejectsRemovedMinPageRankKey(t *testing.T) {
+	path := writeConfig(t, enabledReputationConfig(validReputationTable, "min_pagerank = 0\n"))
+
+	_, _, err := Load(path, false)
+	if err == nil {
+		t.Fatal("configuration with the removed min_pagerank key was accepted")
+	}
+	if !strings.Contains(err.Error(), "unrecognized configuration keys") {
+		t.Fatalf("error = %q, want an unrecognized-key error", err)
+	}
+	if !strings.Contains(err.Error(), "filters.reputation.min_pagerank") {
+		t.Fatalf("error = %q, want it to name filters.reputation.min_pagerank", err)
 	}
 }

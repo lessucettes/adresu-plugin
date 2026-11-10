@@ -107,8 +107,7 @@ func usableSnapshot(s *kitrep.Snapshot, active *view, seeds []nostr.PubKey) bool
 		}
 	}
 	for _, score := range s.Scores {
-		if math.IsNaN(score.PageRank) || math.IsInf(score.PageRank, 0) || score.PageRank < 0 ||
-			math.IsNaN(score.TrustRank) || math.IsInf(score.TrustRank, 0) || score.TrustRank < 0 {
+		if math.IsNaN(score.TrustRank) || math.IsInf(score.TrustRank, 0) || score.TrustRank < 0 {
 			return false
 		}
 	}

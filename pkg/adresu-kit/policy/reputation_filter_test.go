@@ -70,9 +70,9 @@ func TestReputationFilterValidatesConfig(t *testing.T) {
 		wantErr string
 	}{
 		{"unknown mode", kitconfig.ReputationFilterConfig{Enabled: true, Mode: "bogus"}, "mode"},
-		{"negative pagerank", kitconfig.ReputationFilterConfig{Enabled: true, MinPageRank: -0.01}, "min_pagerank"},
+		{"negative trustrank", kitconfig.ReputationFilterConfig{Enabled: true, MinTrustRank: -0.01}, "min_trustrank"},
 		{"trustrank above one", kitconfig.ReputationFilterConfig{Enabled: true, MinTrustRank: 1.01}, "min_trustrank"},
-		{"nan pagerank", kitconfig.ReputationFilterConfig{Enabled: true, MinPageRank: math.NaN()}, "min_pagerank"},
+		{"nan trustrank", kitconfig.ReputationFilterConfig{Enabled: true, MinTrustRank: math.NaN()}, "min_trustrank"},
 		{"infinite trustrank", kitconfig.ReputationFilterConfig{Enabled: true, MinTrustRank: math.Inf(1)}, "min_trustrank"},
 	}
 
@@ -114,12 +114,11 @@ func TestReputationFilterEphemeralKindsBypass(t *testing.T) {
 	reader := &fakeReputationReader{assessment: reputation.Assessment{
 		Ready: true,
 		Known: true,
-		Score: reputation.Score{PageRank: 0.0, TrustRank: 0.0},
+		Score: reputation.Score{TrustRank: 0.0},
 	}}
 	filter, err := NewReputationFilter(&kitconfig.ReputationFilterConfig{
 		Enabled:      true,
 		Mode:         kitconfig.ReputationModeEnforce,
-		MinPageRank:  0.5,
 		MinTrustRank: 0.5,
 	}, reader)
 	if err != nil {
@@ -153,7 +152,6 @@ func TestReputationFilterUnreadySnapshotPasses(t *testing.T) {
 	filter, err := NewReputationFilter(&kitconfig.ReputationFilterConfig{
 		Enabled:      true,
 		Mode:         kitconfig.ReputationModeEnforce,
-		MinPageRank:  0.5,
 		MinTrustRank: 0.5,
 	}, reader)
 	if err != nil {
@@ -198,8 +196,8 @@ func TestReputationFilterEnforceUnknownAuthor(t *testing.T) {
 		t.Fatalf("enforce rejection produced observation metadata: %#v", meta)
 	}
 	diagnostic, ok := meta[ReputationDiagnosticKey].(ReputationDiagnostic)
-	if !ok || diagnostic.Assessment != reader.assessment || diagnostic.MinPageRank != 0 || diagnostic.MinTrustRank != 0 {
-		t.Fatalf("enforce diagnostic = %#v, want the assessment and configured minima", meta)
+	if !ok || diagnostic.Assessment != reader.assessment || diagnostic.MinTrustRank != 0 {
+		t.Fatalf("enforce diagnostic = %#v, want the assessment and configured minimum", meta)
 	}
 }
 
@@ -207,13 +205,12 @@ func TestReputationFilterObserveRecordsWouldReject(t *testing.T) {
 	assessment := reputation.Assessment{
 		Ready: true,
 		Known: true,
-		Score: reputation.Score{PageRank: 0.1, TrustRank: 0.15},
+		Score: reputation.Score{TrustRank: 0.15},
 	}
 	reader := &fakeReputationReader{assessment: assessment}
 	filter, err := NewReputationFilter(&kitconfig.ReputationFilterConfig{
 		Enabled:      true,
 		Mode:         kitconfig.ReputationModeObserve,
-		MinPageRank:  0.2,
 		MinTrustRank: 0.25,
 	}, reader)
 	if err != nil {
@@ -237,19 +234,16 @@ func TestReputationFilterObserveRecordsWouldReject(t *testing.T) {
 	}
 }
 
-func TestReputationFilterEnforceRequiresBothRawScores(t *testing.T) {
+func TestReputationFilterEnforceRequiresTrustRank(t *testing.T) {
 	tests := []struct {
 		name      string
-		pageRank  float64
 		trustRank float64
 		allowed   bool
 	}{
-		{"both exactly at minimum", 0.10, 0.20, true},
-		{"both above minimum", 0.11, 0.21, true},
-		{"pagerank below", 0.09, 0.20, false},
-		{"trustrank below", 0.10, 0.19, false},
-		{"both below", 0.09, 0.19, false},
-		{"nan pagerank", math.NaN(), 0.20, false},
+		{"exactly at minimum", 0.20, true},
+		{"above minimum", 0.21, true},
+		{"below minimum", 0.19, false},
+		{"nan trustrank", math.NaN(), false},
 	}
 
 	for _, test := range tests {
@@ -257,12 +251,11 @@ func TestReputationFilterEnforceRequiresBothRawScores(t *testing.T) {
 			reader := &fakeReputationReader{assessment: reputation.Assessment{
 				Ready: true,
 				Known: true,
-				Score: reputation.Score{PageRank: test.pageRank, TrustRank: test.trustRank},
+				Score: reputation.Score{TrustRank: test.trustRank},
 			}}
 			filter, err := NewReputationFilter(&kitconfig.ReputationFilterConfig{
 				Enabled:      true,
 				Mode:         kitconfig.ReputationModeEnforce,
-				MinPageRank:  0.10,
 				MinTrustRank: 0.20,
 			}, reader)
 			if err != nil {
@@ -289,7 +282,7 @@ func TestReputationFilterPassDoesNotRecordObservation(t *testing.T) {
 	reader := &fakeReputationReader{assessment: reputation.Assessment{
 		Ready: true,
 		Known: true,
-		Score: reputation.Score{PageRank: 0.5, TrustRank: 0.5},
+		Score: reputation.Score{TrustRank: 0.5},
 	}}
 	filter, err := NewReputationFilter(&kitconfig.ReputationFilterConfig{
 		Enabled: true,
@@ -316,14 +309,13 @@ func TestReputationRejectionsUseHumanReadableMessages(t *testing.T) {
 		want       string
 	}{
 		{"unknown", reputation.Assessment{Ready: true}, "restricted: The event author is not in this relay's trusted network."},
-		{"low pagerank", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{PageRank: 1e-7, TrustRank: 0.2}}, "restricted: The event author's reputation does not meet this relay's requirements."},
-		{"low trustrank", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{PageRank: 0.1, TrustRank: 4.394921967211787e-7}}, "restricted: The event author's reputation does not meet this relay's requirements."},
-		{"both low", reputation.Assessment{Ready: true, Known: true}, "restricted: The event author's reputation does not meet this relay's requirements."},
-		{"invalid score", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{PageRank: math.NaN(), TrustRank: 0.2}}, "restricted: The event author's reputation does not meet this relay's requirements."},
+		{"low trustrank", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{TrustRank: 4.394921967211787e-7}}, "restricted: The event author's reputation does not meet this relay's requirements."},
+		{"zero trustrank", reputation.Assessment{Ready: true, Known: true}, "restricted: The event author's reputation does not meet this relay's requirements."},
+		{"invalid score", reputation.Assessment{Ready: true, Known: true, Score: reputation.Score{TrustRank: math.NaN()}}, "restricted: The event author's reputation does not meet this relay's requirements."},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			filter, err := NewReputationFilter(&kitconfig.ReputationFilterConfig{
-				Enabled: true, Mode: "enforce", MinPageRank: 0.1, MinTrustRank: 0.2,
+				Enabled: true, Mode: "enforce", MinTrustRank: 0.2,
 			}, &fakeReputationReader{assessment: test.assessment})
 			if err != nil {
 				t.Fatal(err)

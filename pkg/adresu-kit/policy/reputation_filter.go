@@ -26,7 +26,6 @@ const (
 // ReputationObservationKey retains its separate Assessment value for callers.
 type ReputationDiagnostic struct {
 	Assessment   reputation.Assessment
-	MinPageRank  float64
 	MinTrustRank float64
 }
 
@@ -36,7 +35,6 @@ type ReputationDiagnostic struct {
 type ReputationFilter struct {
 	enabled      bool
 	mode         string
-	minPageRank  float64
 	minTrustRank float64
 	reader       reputation.Reader
 }
@@ -60,7 +58,6 @@ func NewReputationFilter(cfg *config.ReputationFilterConfig, reader reputation.R
 	return &ReputationFilter{
 		enabled:      cfg.Enabled,
 		mode:         mode,
-		minPageRank:  cfg.MinPageRank,
 		minTrustRank: cfg.MinTrustRank,
 		reader:       reader,
 	}, nil
@@ -91,7 +88,7 @@ func (f *ReputationFilter) Match(_ context.Context, event *nostr.Event, meta map
 	}
 	if meta != nil {
 		meta[ReputationDiagnosticKey] = ReputationDiagnostic{
-			Assessment: assessment, MinPageRank: f.minPageRank, MinTrustRank: f.minTrustRank,
+			Assessment: assessment, MinTrustRank: f.minTrustRank,
 		}
 	}
 
@@ -105,8 +102,8 @@ func (f *ReputationFilter) Match(_ context.Context, event *nostr.Event, meta map
 	return newResult(false, "restricted: "+reason, nil)
 }
 
-// evaluate applies the configured raw-score minima. Both scores must pass
-// independently; the scores are not percentages and are not combined.
+// evaluate applies the configured raw TrustRank minimum. The score is not a
+// percentage and is not combined with any other rank.
 func (f *ReputationFilter) evaluate(assessment reputation.Assessment) (bool, string) {
 	if !assessment.Known {
 		return true, "The event author is not in this relay's trusted network."
@@ -114,7 +111,7 @@ func (f *ReputationFilter) evaluate(assessment reputation.Assessment) (bool, str
 
 	// Write the comparison as >= so a NaN reader value cannot slip
 	// through; NaN < minimum is false but NaN >= minimum must be false too.
-	if !(assessment.Score.PageRank >= f.minPageRank) || !(assessment.Score.TrustRank >= f.minTrustRank) {
+	if !(assessment.Score.TrustRank >= f.minTrustRank) {
 		return true, "The event author's reputation does not meet this relay's requirements."
 	}
 	return false, ""

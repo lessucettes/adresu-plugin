@@ -27,7 +27,7 @@ network while handling an event.
 | Mode | Behaviour |
 | --- | --- |
 | `observe` | Never rejects. When a ready snapshot says the author would be rejected, the filter records a `reputation.Assessment` in `meta["reputation_observation"]` (exported as `kitpolicy.ReputationObservationKey`) and allows the event, so the rest of the pipeline still runs. The plugin integration owns logging. |
-| `enforce` | Rejects with `Allowed: false` and a reason beginning with `restricted: ` when a ready snapshot says the author is unknown or below the configured minima. |
+| `enforce` | Rejects with `Allowed: false` and a reason beginning with `restricted: ` when a ready snapshot says the author is unknown or below the configured TrustRank minimum. |
 
 Observe mode is the filter's own shadow mode, not the global `-dry-run` flag.
 `-dry-run` changes all policy rejections to accepts and suppresses rejection
@@ -43,37 +43,34 @@ human-readable messages about the event author. They do not expose snapshot
 internals, algorithm names, or numeric thresholds. Rejected and would-reject
 assessments also populate `meta[kitpolicy.ReputationDiagnosticKey]` with a
 `kitpolicy.ReputationDiagnostic`; application logging consumes it separately.
-Plugin diagnostics retain `known`, `pagerank`, `trustrank`, `min_pagerank`, and
-`min_trustrank` as structured fields, without remote-IP attribution.
+Plugin diagnostics retain `known`, `trustrank`, and `min_trustrank` as
+structured fields, without remote-IP attribution.
 
-## Scores and thresholds
+## TrustRank and its threshold
 
-The snapshot exposes two independent raw scores:
+The snapshot exposes `TrustRank`: normalized trust mass propagated from the
+configured seeds through the bounded follow graph. Both damping loss and mass
+at nodes without outgoing links return to the seeds.
 
-- `PageRank`: normalized PageRank mass from the bounded follow graph.
-- `TrustRank`: normalized trust mass from the same graph.
-
-They are normalized probability masses, not percentages or probabilities that
-an author is honest, and they are not combined into one number. A known author
-passes only when **both** individual raw scores are greater than or equal to
-their configured minima:
+The score is a normalized probability mass, not a percentage or a probability
+that an author is honest. A known author passes when its TrustRank is greater
+than or equal to the configured minimum:
 
 ```toml
 [filters.reputation]
 enabled = true
 mode = "enforce"
-min_pagerank = 0.0
 min_trustrank = 0.0
 ```
 
-Zero minima are valid. In `enforce`, zero minima mean only that the author is
-present in the bounded graph. That is graph-membership policy, **not**
+Zero is a valid minimum. In `enforce`, a zero minimum means only that the author
+is present in the bounded graph. That is graph-membership policy, **not**
 Sybil-resistant reputation. A reachable account whose list is fetched can
 introduce many new keys; graph membership alone does not measure trust strength.
 Merely following a seed does not add an account to this outward-follow graph.
 
 No universally safe threshold is shipped or recommended. Operators must choose
-values based on their own graph, after running observe mode and inspecting the
+a value based on their own graph, after running observe mode and inspecting the
 would-reject assessments. A score that is reasonable for one relay's graph is
 not portable to another.
 
@@ -183,6 +180,22 @@ the latest version per discovered author, but authors that leave the graph are
 not automatically pruned. Graph limits bound each calculation, not the total
 historical cache footprint on disk.
 
+When upgrading from a version with PageRank, remove
+`filters.reputation.min_pagerank` from the configuration before starting the
+new binary. Unknown keys are rejected at startup and by `-validate`; a failed
+hot reload leaves the previous configuration active. Snapshots written by the
+previous version retain their TrustRank scores without a database reset. The
+loader ignores the obsolete score field while checking the original chunk
+digest; new snapshots store only the author key and TrustRank. The on-disk
+format version remains 1 because the retained fields and integrity checks
+are unchanged.
+
+Rollback precaution: a PageRank-era binary reads an omitted `page_rank` as
+zero. If rolling back with a positive `min_pagerank`, use `observe` mode until
+that binary successfully recomputes the snapshot before restoring `enforce`.
+Otherwise known authors can be rejected solely because their restored
+PageRank is zero. A zero `min_pagerank` does not introduce this extra rejection.
+
 - A successful collection persists a complete snapshot generation. The event
   path reads only the in-memory snapshot published by the runtime.
 - An unchanged signed follow list refreshes only a small per-author receipt
@@ -279,7 +292,6 @@ max_iterations = 200
 [filters.reputation]
 enabled = false
 mode = "observe"
-min_pagerank = 0.0
 min_trustrank = 0.0
 ```
 
@@ -305,7 +317,6 @@ Defaults:
 | `reputation.max_iterations` | `200` | 1..10000 |
 | `filters.reputation.enabled` | `false` | boolean |
 | `filters.reputation.mode` | `observe` | `observe` or `enforce` |
-| `filters.reputation.min_pagerank` | `0.0` | finite, in [0,1] |
 | `filters.reputation.min_trustrank` | `0.0` | finite, in [0,1] |
 
 Collector settings are validated only while `filters.reputation.enabled` is
@@ -321,7 +332,6 @@ disabled by default.
 filter, err := kitpolicy.NewReputationFilter(&kitconfig.ReputationFilterConfig{
     Enabled:      true,
     Mode:         kitconfig.ReputationModeObserve,
-    MinPageRank:  0.001,
     MinTrustRank: 0.001,
 }, reader)
 ```
@@ -340,8 +350,8 @@ that exclusion.
 1. Leave the filter disabled until the relay list and seeds are settled.
 2. Enable it in `observe` mode. Confirm the collector produces a ready
    snapshot and inspect the `Reputation observation` diagnostic records.
-3. Choose thresholds from observed data. Remember that zero minima only prove
-   graph membership.
+3. Choose the TrustRank threshold from observed data. Remember that a zero
+   minimum only proves graph membership.
 4. Keep reputation diagnostics out of log-driven IP bans. The plugin uses
    `Reputation observation` and `Event rejected by reputation policy` messages
    without a `remote_ip` field, separate from ordinary `Event rejected by filter`
@@ -355,7 +365,7 @@ that exclusion.
 ## Non-goals
 
 - It is not a global or network-wide reputation system.
-- It is not Sybil-resistant, especially with zero thresholds.
+- It is not Sybil-resistant, especially with a zero threshold.
 - It does not bypass other filters or moderation for trusted authors.
 - It does not implement payments or paid exemptions.
 - It does not fetch missing data on the event path.

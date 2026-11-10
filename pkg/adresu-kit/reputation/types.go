@@ -17,14 +17,12 @@ type FollowList struct {
 	Follows   []nostr.PubKey
 }
 
-// Score keeps the two normalized probability masses separate. A positive
-// PageRank alone is not evidence of trust: uniform restart gives nodes a baseline.
+// Score contains the normalized probability mass of trust from the seeds.
 type Score struct {
-	PageRank  float64
 	TrustRank float64
 }
 
-// Options controls convergence of the shared power-iteration algorithm.
+// Options controls convergence of the TrustRank power-iteration algorithm.
 type Options struct {
 	Damping       float64
 	Tolerance     float64

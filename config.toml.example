@@ -286,10 +286,13 @@
 
 # --- Reputation Filter ---
 # Disabled by default. When enabled, requires [reputation] seeds and relays.
-# PageRank and TrustRank are independent raw scores in [0,1], not percentages.
-# A known author must meet BOTH minima. Zero minima in enforce mode check only
-# membership in the bounded graph; this is NOT Sybil-resistant. Choose
-# thresholds from observe-mode data instead of assuming a default is safe.
+# TrustRank is a raw score in [0,1], not a percentage. A known author must
+# meet the configured minimum. A zero minimum in enforce mode checks only
+# membership in the bounded graph; this is NOT Sybil-resistant. Choose a
+# threshold from observe-mode data instead of assuming a default is safe.
+#
+# Upgrading: remove filters.reputation.min_pagerank from existing configs
+# before starting this version; unknown keys are rejected.
 #
 # mode = "observe" records would-reject assessments for logging and lets the
 # event continue through the rest of the pipeline. mode = "enforce" rejects
@@ -306,7 +309,6 @@
 #[filters.reputation]
 #enabled       = false
 #mode          = "observe"
-#min_pagerank  = 0.0
 #min_trustrank = 0.0
 
 # --- Banned Author Filter ---

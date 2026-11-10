@@ -66,9 +66,6 @@ func TestEmptyLatestListRemovesOlderLinks(t *testing.T) {
 		t.Error("stale follow target is present")
 	}
 	isolated := scoreOf(t, result, pubKey('d'))
-	if isolated.PageRank <= 0 {
-		t.Error("empty-list author is missing from pagerank")
-	}
 	if isolated.TrustRank != 0 {
 		t.Errorf("isolated author trustrank = %v, want 0", isolated.TrustRank)
 	}

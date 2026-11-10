@@ -120,7 +120,6 @@ func (s *BadgerStore) saveReputationSnapshot(ctx context.Context, snapshot *repu
 		}
 		chunk = append(chunk, scoreRecord{
 			PubKey:    pubkey.Hex(),
-			PageRank:  score.PageRank,
 			TrustRank: score.TrustRank,
 		})
 		if len(chunk) == snapshotChunkEntries {

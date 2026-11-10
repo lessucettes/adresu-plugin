@@ -92,7 +92,7 @@ func TestReaderExpiryAndConcurrentReads(t *testing.T) {
 	m.current.Store(active)
 	reader := scopedReader{manager: m, id: id}
 	now := time.Now()
-	active.snapshot.Store(&kitrep.Snapshot{CalculatedAt: now, ValidUntil: now.Add(time.Hour), Scores: map[nostr.PubKey]kitrep.Score{seed: {PageRank: 1, TrustRank: 1}}})
+	active.snapshot.Store(&kitrep.Snapshot{CalculatedAt: now, ValidUntil: now.Add(time.Hour), Scores: map[nostr.PubKey]kitrep.Score{seed: {TrustRank: 1}}})
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Go(func() {

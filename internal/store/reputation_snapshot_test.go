@@ -27,7 +27,6 @@ func reputationTestSnapshot(scoreCount int, configID string) *reputation.Snapsho
 	scores := make(map[nostr.PubKey]reputation.Score, scoreCount)
 	for i := 0; i < scoreCount; i++ {
 		scores[snapshotTestPubKey(i)] = reputation.Score{
-			PageRank:  float64(i+1) / float64(scoreCount+1),
 			TrustRank: float64(scoreCount-i) / float64(scoreCount+1),
 		}
 	}
@@ -181,6 +180,61 @@ func TestReputationSnapshotZeroValidUntilAndEmptyGraph(t *testing.T) {
 	}
 }
 
+func TestReputationSnapshotLegacyUpgrade(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	want := reputationTestSnapshot(1, "legacy-config")
+	// Use the previous on-disk shape independently of the current score type.
+	chunk := []byte(fmt.Sprintf(`[{"pubkey":%q,"page_rank":0.25,"trust_rank":0.5}]`, snapshotTestPubKey(0).Hex()))
+	digest := sha256.New()
+	addSnapshotChunkDigest(digest, 0, chunk)
+	manifest := snapshotManifest{
+		Format: 1, Generation: strings.Repeat("a", 32),
+		ChunkEntries: 512, ChunkCount: 1, ScoreCount: 1,
+		ChunkDigest: fmt.Sprintf("%x", digest.Sum(nil)), ConfigID: want.ConfigID,
+		CalculatedAt: want.CalculatedAt, ValidUntil: want.ValidUntil,
+		Coverage: want.Coverage, Nodes: want.Nodes, Edges: want.Edges,
+	}
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeReputationTestValue(t, s, snapshotChunkKey(manifest.Generation, 0), chunk)
+	writeReputationTestValue(t, s, []byte(reputationSnapshotManifestKey), encoded)
+	loaded, err := s.LoadReputationSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("load legacy snapshot: %v", err)
+	}
+	assertReputationSnapshotEqual(t, want, loaded)
+	if err := s.SaveReputationSnapshot(ctx, loaded); err != nil {
+		t.Fatalf("save upgraded snapshot: %v", err)
+	}
+	upgraded := readReputationTestSnapshotManifest(t, s)
+	if err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(snapshotChunkKey(upgraded.Generation, 0))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(value []byte) error {
+			var records []map[string]json.RawMessage
+			if err := json.Unmarshal(value, &records); err != nil {
+				return err
+			}
+			if len(records) != 1 || len(records[0]) != 2 || records[0]["pubkey"] == nil || records[0]["trust_rank"] == nil {
+				t.Fatalf("new snapshot must store only pubkey and trust_rank: %s", value)
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadReputationSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReputationSnapshotEqual(t, loaded, got)
+}
+
 func TestReputationSnapshotMultiChunkReopen(t *testing.T) {
 	path := t.TempDir()
 	ctx := context.Background()
@@ -327,7 +381,7 @@ func TestReputationSnapshotCorruptActiveGeneration(t *testing.T) {
 			if err := json.Unmarshal(value, &records); err != nil {
 				t.Fatalf("decode chunk: %v", err)
 			}
-			records[0].PageRank += 0.25
+			records[0].TrustRank += 0.25
 			encoded, err := json.Marshal(records)
 			if err != nil {
 				t.Fatalf("encode chunk: %v", err)
@@ -417,14 +471,14 @@ func TestReputationSnapshotValidation(t *testing.T) {
 		{name: "negative nodes", mutate: func(snapshot *reputation.Snapshot) { snapshot.Nodes = -1 }},
 		{name: "negative edges", mutate: func(snapshot *reputation.Snapshot) { snapshot.Edges = -1 }},
 		{name: "scores exceed nodes", mutate: func(snapshot *reputation.Snapshot) { snapshot.Nodes = 0 }},
-		{name: "NaN page rank", mutate: func(snapshot *reputation.Snapshot) {
-			snapshot.Scores[snapshotTestPubKey(0)] = reputation.Score{PageRank: math.NaN()}
+		{name: "NaN trust rank", mutate: func(snapshot *reputation.Snapshot) {
+			snapshot.Scores[snapshotTestPubKey(0)] = reputation.Score{TrustRank: math.NaN()}
 		}},
 		{name: "infinite trust rank", mutate: func(snapshot *reputation.Snapshot) {
 			snapshot.Scores[snapshotTestPubKey(0)] = reputation.Score{TrustRank: math.Inf(1)}
 		}},
-		{name: "negative page rank", mutate: func(snapshot *reputation.Snapshot) {
-			snapshot.Scores[snapshotTestPubKey(0)] = reputation.Score{PageRank: -0.5}
+		{name: "negative trust rank", mutate: func(snapshot *reputation.Snapshot) {
+			snapshot.Scores[snapshotTestPubKey(0)] = reputation.Score{TrustRank: -0.5}
 		}},
 	}
 	for _, test := range tests {
