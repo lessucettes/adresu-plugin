@@ -1,371 +1,107 @@
 # Reputation policy
 
-The `ReputationFilter` checks event authors against a follow-graph ranking that
-the plugin computes locally. It is **disabled by default**. No external
-reputation service, API key, or remote score provider is involved.
+Use a local follow graph to decide which authors can publish to your relay. The plugin collects signed follow lists from your chosen relays, computes TrustRank from your seed authors, and checks events against the resulting snapshot. No external reputation service or API key is needed.
 
-The filter is policy-only: it reads a prepared snapshot and decides whether an
-event may proceed. It never fetches relays, computes ranks, or waits on the
-network while handling an event.
+Reputation is **disabled by default**. It supplements bans, rate limits, and other filters; a high score does not bypass them.
 
-## What is checked
+## Get started
 
-- Every non-ephemeral event is in scope, regardless of author or payment
-  status. This includes kind 0, 1, 3, 4, 5, 6, 7, addressable events, and all
-  other kinds outside the ephemeral range.
-- NIP-01 ephemeral events (`20000 <= kind < 30000`) bypass reputation checks.
-  They still pass through every other configured filter.
-- Disabling the filter means no snapshot lookup and no change to any event.
-- There is no free/paid split and no payment-based bypass is implemented.
-- There is no built-in trusted-author allowlist or default bypass. Other
-  filters, bans, and moderation continue to apply normally.
-
-## Modes
-
-`observe` is the default and the recommended starting point.
-
-| Mode | Behaviour |
-| --- | --- |
-| `observe` | Never rejects. When a ready snapshot says the author would be rejected, the filter records a `reputation.Assessment` in `meta["reputation_observation"]` (exported as `kitpolicy.ReputationObservationKey`) and allows the event, so the rest of the pipeline still runs. The plugin integration owns logging. |
-| `enforce` | Rejects with `Allowed: false` and a reason beginning with `restricted: ` when a ready snapshot says the author is unknown or below the configured TrustRank minimum. |
-
-Observe mode is the filter's own shadow mode, not the global `-dry-run` flag.
-`-dry-run` changes all policy rejections to accepts and suppresses rejection
-handlers. Reputation observe mode affects only this filter: every other filter
-keeps enforcing, and no reputation rejection reaches autoban.
-
-A disabled filter accepts without a reader. An enabled filter requires a
-`reputation.Reader`; construction fails otherwise. An empty mode passed to the
-kit constructor is treated as `observe` for standalone callers.
-
-Client rejections retain the NIP-01 `restricted:` prefix and use short,
-human-readable messages about the event author. They do not expose snapshot
-internals, algorithm names, or numeric thresholds. Rejected and would-reject
-assessments also populate `meta[kitpolicy.ReputationDiagnosticKey]` with a
-`kitpolicy.ReputationDiagnostic`; application logging consumes it separately.
-Plugin diagnostics retain `known`, `trustrank`, and `min_trustrank` as
-structured fields, without remote-IP attribution.
-
-## TrustRank and its threshold
-
-The snapshot exposes `TrustRank`: normalized trust mass propagated from the
-configured seeds through the bounded follow graph. Both damping loss and mass
-at nodes without outgoing links return to the seeds.
-
-The score is a normalized probability mass, not a percentage or a probability
-that an author is honest. A known author passes when its TrustRank is greater
-than or equal to the configured minimum:
-
-```toml
-[filters.reputation]
-enabled = true
-mode = "enforce"
-min_trustrank = 0.0
-```
-
-Zero is a valid minimum. In `enforce`, a zero minimum means only that the author
-is present in the bounded graph. That is graph-membership policy, **not**
-Sybil-resistant reputation. A reachable account whose list is fetched can
-introduce many new keys; graph membership alone does not measure trust strength.
-Merely following a seed does not add an account to this outward-follow graph.
-
-No universally safe threshold is shipped or recommended. Operators must choose
-a value based on their own graph, after running observe mode and inspecting the
-would-reject assessments. A score that is reasonable for one relay's graph is
-not portable to another.
-
-## How the graph is collected
-
-The collector runs in the background inside the plugin process:
-
-- By default it connects only to the relays in `reputation.relays`. The list is an
-  explicit allowlist of at most eight URLs. Relay URLs must be `ws://` or
-  `wss://` with a host, no credentials/userinfo, and no fragment.
-- It speaks WebSocket directly to each relay instead of using a pooled
-  subscription client. WebSocket frames are capped at 2 MiB, EOSE is treated as
-  the completion signal for a fetch, and HTTP redirects are not followed. At
-  most eight relay requests run concurrently in a batch. Each relay batch also
-  has a 32 MiB total response budget and a bounded frame count. Configure the
-  final relay URLs explicitly. These byte limits are independent of
-  `max_follows`: very large lists can hit the byte limit first; reduce batch
-  size when large lists exceed the batch budget.
-- NIP-42 authentication is supported for configured and discovered relays.
-  Every connection generates a separate anonymous key, never an operator key.
-  Only a matching positive AUTH acknowledgement unlocks a fresh subscription;
-  the old subscription is closed and pre-authentication data is discarded.
-  Anonymous AUTH cannot bypass paid or key-specific relay access restrictions.
-- It starts from the public keys in `reputation.seeds`, all expressed as
-  64-character hex keys.
-- It fetches kind-3 follow lists and verifies each event's signature with the
-  kit's strict canonical encoding. Only valid events enter the graph. Kind 3 is
-  replaceable: the newest valid list by `created_at` is the author's current
-  list. Older list events do not overwrite a newer one.
-- Traversal is a bounded breadth-first search, not the global Nostr graph.
-  `max_depth` is the number of BFS levels **fetched**:
-  - depth 1 fetches the seed authors' lists and includes their targets as
-    boundary nodes;
-  - depth 2 also fetches the lists of authors directly followed by the seeds.
-  - deeper levels continue the same pattern.
-- `max_nodes`, `max_edges`, `max_follows`, and `batch_size` cap memory, work,
-  and per-list fan-out. Every `p` tag counts toward `max_follows`, including
-  malformed and repeated tags, before curve validation. Oversized lists are
-  rejected, never silently truncated into a different adjacency list. Parsing
-  checks cancellation periodically; unrequested authors are discarded before
-  expensive event validation.
-- When `reputation.discover_relays` is enabled, a bounded targeted NIP-65
-  fallback runs only for authors the fixed relays did not return. See below.
-
-Signatures matter because a relay is not trusted to invent follows. Invalid or
-malformed kind-3 events are ignored. Replaceable semantics prevent an old,
-stale contact list from overwriting a newer one during collection.
-
-## Optional NIP-65 outbox fallback
-
-The fallback is **disabled by default**. When
-`reputation.discover_relays = true`, the collector still runs the fixed
-`reputation.relays` query first. Only authors missing from that completed pass
-are looked up individually:
-
-1. Query `reputation.discovery_relays` for the missing authors' signed kind
-   10002 relay-list metadata. These are bootstrap/indexer relays such as
-   `wss://purplepag.es` or `wss://indexer.coracle.social`. One to eight
-   explicit `ws://` or `wss://` URLs are required; they use the same host,
-   credentials, and fragment validation as `reputation.relays`. Static
-   operator bootstrap URLs may use loopback (`ws://127.0.0.1:...`) in tests or
-   local deployments.
-2. Verify each metadata event with the kit's strict canonical signature check.
-   At most 32 `r` tags are accepted. Only `wss://` URLs without userinfo or a
-   fragment are candidates; `read`-only and unknown markers are excluded. At
-   most four write relay URLs are selected per author. Metadata that is
-   malformed, wrongly authored, has an invalid signature/ID, or is more than
-   five minutes in the future is ignored, so its URLs are never followed.
-3. Group missing authors by discovered write relay and query kind-3 lists from
-   those relays. One grouped query can serve many authors. A single fetch uses
-   at most 64 unique discovered endpoints and at most eight concurrent network
-   requests; each request respects `fetch_timeout`, the parent context, and the
-   overall refresh deadline. Each group of metadata or outbox queries shares a
-   32 MiB response budget across all endpoints, checked before event parsing.
-   Write-relay URLs are limited to 2 KiB each before parsing or caching.
-
-Discovered relay URLs face stricter transport checks than the operator's fixed
-list. They must be `wss://` with no credentials or fragment. The discovery HTTP
-transport has no proxy function (so `HTTP_PROXY`/`HTTPS_PROXY` cannot reroute
-it), rejects redirects, and resolves the host inside `DialContext` on every
-connection. Both the resolved and actually dialed address must be public:
-loopback, private, link-local, unspecified, multicast, reserved, and CGNAT
-destinations are blocked. IPv4-mapped addresses are checked as IPv4, so mapping
-cannot bypass the guard.
-A DNS answer cannot be checked once and then rebound to a different address
-at dial time.
-
-Discovery metadata is cached only in worker-owned memory, never in the
-database. The cache is capped by `max_nodes` and each entry counts, including
-negative entries. The latest signed metadata wins by `created_at`, then the
-lower event ID, and fresh metadata is reused for up to one hour. A successful
-lookup that finds no metadata marks the author missing for five minutes; it is
-not turned into an empty relay list or an empty follow list. Transient
-bootstrap failures are retried after five minutes and never cached
-indefinitely. A failed refresh keeps previously verified metadata. Completed
-per-author NIP-65 results can be merged with fixed-source results, but only
-events returned after EOSE are used; a partial pre-EOSE response cannot
-establish readiness or refresh a cache age.
-
-## Persistence, lifecycle, and reload
-
-Snapshots live in the plugin's Badger database, alongside bans and moderation
-state. The database handle is opened once and shared by the pipeline lifecycle.
-Persistence uses the store's existing Badger defaults; this feature does not
-introduce an additional power-loss/fsync guarantee. Follow-list cache rows keep
-the latest version per discovered author, but authors that leave the graph are
-not automatically pruned. Graph limits bound each calculation, not the total
-historical cache footprint on disk.
-
-When upgrading from a version with PageRank, remove
-`filters.reputation.min_pagerank` from the configuration before starting the
-new binary. Unknown keys are rejected at startup and by `-validate`; a failed
-hot reload leaves the previous configuration active. Snapshots written by the
-previous version retain their TrustRank scores without a database reset. The
-loader ignores the obsolete score field while checking the original chunk
-digest; new snapshots store only the author key and TrustRank. The on-disk
-format version remains 1 because the retained fields and integrity checks
-are unchanged.
-
-Rollback precaution: a PageRank-era binary reads an omitted `page_rank` as
-zero. If rolling back with a positive `min_pagerank`, use `observe` mode until
-that binary successfully recomputes the snapshot before restoring `enforce`.
-Otherwise known authors can be rejected solely because their restored
-PageRank is zero. A zero `min_pagerank` does not introduce this extra rejection.
-
-- A successful collection persists a complete snapshot generation. The event
-  path reads only the in-memory snapshot published by the runtime.
-- An unchanged signed follow list refreshes only a small per-author receipt
-  header; its stored adjacency array is not rewritten. Replacement updates the
-  list and receipt together in one transaction.
-- Hot reload rebuilds filters and swaps the pipeline, but it does not drop the
-  Badger handle or the persisted snapshot. Policy-only changes keep the worker
-  and its usable snapshot. Changing seeds or other graph settings restarts the
-  worker; the old graph is not used under a different configuration. Until a
-  matching usable snapshot is available, reputation checks fail open.
-- `database.path` still requires a restart, as with the rest of the plugin.
-  `refresh_interval` and the collector limits are re-read on reload and apply
-  to subsequent background collection.
-
-Only one snapshot is active at a time. A refresh that fails or stays below
-`min_coverage` leaves the previous usable snapshot in place until it exceeds
-`max_age`. Coverage measures requested authors with verified, sufficiently
-recent cached lists; missing lists do not count, but verified empty lists do.
-Only sources that complete a batch with EOSE contribute fetched lists to the
-cache; if all sources fail, only the existing cache can be used. A
-refresh can publish only if coverage and all other bounds pass, and its
-`valid_until` is limited by the oldest list's `fetched_at + max_age`: repeatedly
-recomputing stale cache data cannot extend the fallback window.
-
-Lists observed within `refresh_interval` are reused without another network
-query or receipt write unless approaching expiry within the worker's refresh
-budget, including when `max_age` equals `refresh_interval`.
-After an interrupted crawl, the next attempt therefore skips successfully
-cached fresh authors and can continue to later BFS batches. Missing authors
-are still queried, so this is not a guarantee that every large graph can finish
-within the deadline. Cached authors still count toward coverage and all graph
-limits; no partial graph is published. A complete graph can combine receipts
-from several interrupted attempts, always bounded by its oldest receipt.
-
-## Failure modes and max-age fallback
-
-The filter fails open. An event is never rejected because reputation data is
-missing, stale, or unusable.
-
-- At startup, before the first successful collection, the snapshot is not
-  ready. Every event passes the reputation filter until a ready snapshot
-  exists.
-- Relay failures, timeouts, invalid events, redirects, and truncated lists can
-  leave a partial graph. A snapshot whose coverage is below `min_coverage` is
-  not marked ready.
-- With discovery enabled, a failed bootstrap indexer or discovered write relay
-  leaves that author missing for this pass. It is never counted as an empty
-  follow list, and verified metadata from an earlier pass is retained for the
-  next attempt. Completed per-author discovery results may still merge with
-  completed fixed-relay results.
-- A ready snapshot remains usable until it is older than `max_age`. This is the
-  fallback window: transient collector failures do not immediately disable
-  enforcement.
-- Once the newest usable snapshot is older than `max_age`, lookups report not
-  ready and the filter fails open again.
-- `max_age` must be at least `refresh_interval`. After a successful refresh,
-  the worker shortens its next wait when needed to leave a full refresh budget
-  before `valid_until`, including when the two configured durations are equal.
-  If cached data is already inside that budget, retries wait the smaller of
-  five seconds and `refresh_interval` instead of running in a tight loop.
-- Failures are logged by the runtime on stderr. They never block or delay the
-  event path.
-- Each refresh has an overall deadline of the smallest of 15 minutes,
-  `refresh_interval`, and `max_age / 2`. A slow source cannot extend one cycle
-  indefinitely across hundreds of separately timed batches. Deadline failure
-  retains the last usable snapshot; it does not publish the partial graph.
-- Stale or now-over-budget cached lists count as missing for `min_coverage`,
-  rather than poisoning every future refresh. Database corruption and I/O
-  errors remain operational failures, not silently accepted missing data.
-
-## Configuration
+Add these sections to your plugin configuration, replacing the seed and relay placeholders with your own choices:
 
 ```toml
 [reputation]
-seeds = [
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-]
+seeds = ["<64-character hex public key>"]
 relays = ["wss://relay.example.com"]
-discover_relays = false
-discovery_relays = []
 refresh_interval = "1h"
 max_age = "72h"
-fetch_timeout = "10s"
 max_depth = 2
-max_nodes = 50000
-max_edges = 1000000
-batch_size = 64
-max_follows = 5000
 min_coverage = 0.8
-damping = 0.85
-tolerance = 1e-8
-max_iterations = 200
 
 [filters.reputation]
-enabled = false
+enabled = true
 mode = "observe"
 min_trustrank = 0.0
 ```
 
-Defaults:
+Seeds should be authors whose follows you trust. Supply at least one seed and one relay, with no more than eight relay URLs. Configured relays must use `ws://` or `wss://`, include a host, and contain no credentials or URL fragment. Use final relay URLs: redirects are not followed.
 
-| Key | Default | Validation |
+Start in `observe` mode. Look for `Local reputation snapshot updated` or `Restored local reputation snapshot` in the plugin logs, then review `Reputation observation` records before enabling enforcement. These messages use the `info` log level.
+
+For general plugin setup, see the [README](../README.md). The [configuration example](../config.toml.example) lists all collector and filter options. To validate configuration, use `-validate` with a disposable database path, not the database of a running relay.
+
+## Choose an admission policy
+
+| Mode | Behaviour |
+| --- | --- |
+| `observe` | Logs authors who would be rejected, without rejecting their events. Other filters still enforce their policies. |
+| `enforce` | Rejects authors absent from a usable graph or below `min_trustrank`, with a client-facing `restricted:` reason. |
+
+Both modes check every non-ephemeral event. Ephemeral kinds (`20000 <= kind < 30000`) bypass reputation but remain subject to other filters. The global `-dry-run` flag previews all plugin policies; `observe` previews only reputation.
+
+### Set a TrustRank threshold
+
+TrustRank distributes trust from the seeds along outgoing follow links. Scores are normalized values in `[0,1]`, not percentages or probabilities that an author is honest. A known author passes when its score is **greater than or equal to** `min_trustrank`.
+
+- **Zero threshold:** requires only membership in the collected graph. It is not Sybil-resistant: a reachable author whose list is fetched can introduce many new keys.
+- **Positive threshold:** also requires a minimum share of trust. Choose it from observations of your own graph; there is no universally safe value, and thresholds are not portable between graphs.
+
+Following a seed does not add an account to the graph. Collection follows links outward from the seeds, not back toward their followers.
+
+Set your chosen `min_trustrank` while still in `observe` mode and review the results. Diagnostics include `known`, `trustrank`, and `min_trustrank`. When the decisions match your relay's policy, change `mode` to `"enforce"`.
+
+## Collect the graph
+
+Collection runs in the background. Event processing reads the local snapshot and never waits for a relay request. Only verified kind-3 follow lists are used; older lists do not replace newer ones.
+
+`max_depth` controls how many levels of follow lists are fetched, not the distance of every author retained in the graph:
+
+- `1` fetches the seeds' lists and includes the authors they follow as boundary nodes.
+- `2` also fetches those authors' lists and includes their follows.
+- Values up to `4` extend the same traversal.
+
+The main collector settings and their defaults are:
+
+| Setting under `[reputation]` | Default | Purpose |
 | --- | --- | --- |
-| `reputation.seeds` | unset | required and valid hex when enabled |
-| `reputation.relays` | unset | required; at most 8; `ws://`/`wss://` URLs with a host, no credentials or fragment |
-| `reputation.discover_relays` | `false` | boolean |
-| `reputation.discovery_relays` | unset | when discovery is enabled: at most 8; same URL validation as `relays` |
-| `reputation.refresh_interval` | `1h` | positive |
-| `reputation.max_age` | `72h` | positive, at least `refresh_interval` |
-| `reputation.fetch_timeout` | `10s` | positive |
-| `reputation.max_depth` | `2` | 1..4 |
-| `reputation.max_nodes` | `50000` | 1..1000000 |
-| `reputation.max_edges` | `1000000` | 1..20000000 |
-| `reputation.batch_size` | `64` | 1..200 |
-| `reputation.max_follows` | `5000` | 1..50000 |
-| `reputation.min_coverage` | `0.8` | finite, in (0,1] |
-| `reputation.damping` | `0.85` | finite, in (0,1) |
-| `reputation.tolerance` | `1e-8` | finite, > 0 |
-| `reputation.max_iterations` | `200` | 1..10000 |
-| `filters.reputation.enabled` | `false` | boolean |
-| `filters.reputation.mode` | `observe` | `observe` or `enforce` |
-| `filters.reputation.min_trustrank` | `0.0` | finite, in [0,1] |
+| `refresh_interval` | `"1h"` | Refresh cadence; must be positive. |
+| `max_age` | `"72h"` | Maximum age of usable data; must be at least `refresh_interval`. |
+| `fetch_timeout` | `"10s"` | Timeout for a relay request. |
+| `min_coverage` | `0.8` | Required share of requested authors with usable follow lists, in `(0,1]`. Verified empty lists count; missing lists do not. |
+| `max_depth` | `2` | Number of levels fetched, from `1` to `4`. |
+| `max_nodes` | `50000` | Maximum graph authors. |
+| `max_edges` | `1000000` | Maximum follow links. |
+| `max_follows` | `5000` | Per-list `p`-tag limit; oversized lists are rejected, not truncated. |
+| `batch_size` | `64` | Authors queried per batch. Reduce it if large lists exceed response budgets. |
 
-Collector settings are validated only while `filters.reputation.enabled` is
-true. A disabled filter needs no seeds or relays and does not start collection.
-Existing configurations keep their current behavior because reputation is
-disabled by default.
+These limits bound each collection, not the global Nostr network. A refresh that exceeds graph limits, times out, or cannot reach the required coverage does not replace the last usable snapshot.
 
-## Standalone kit use
+### Optional relay discovery
 
-`pkg/adresu-kit/policy` is usable without the plugin:
+If your fixed relays lack some authors' follow lists, enable the NIP-65 outbox fallback. Add these keys to the existing `[reputation]` table:
 
-```go
-filter, err := kitpolicy.NewReputationFilter(&kitconfig.ReputationFilterConfig{
-    Enabled:      true,
-    Mode:         kitconfig.ReputationModeObserve,
-    MinTrustRank: 0.001,
-}, reader)
+```toml
+discover_relays = true
+discovery_relays = ["wss://purplepag.es", "wss://indexer.coracle.social"]
 ```
 
-The caller supplies a `reputation.Reader` and owns collection, persistence, and
-logging. In observe mode, the filter returns `Allowed: true` and puts a
-`reputation.Assessment` under `meta[kitpolicy.ReputationObservationKey]`
-(the literal key is `reputation_observation`). It does not create a logger or
-write observation logs itself. Autoban integrations should exclude
-`kitpolicy.ReputationFilterName` from strike counting so a reputation rejection
-cannot itself trigger an author ban. This repository's parent wiring performs
-that exclusion.
+The collector queries fixed relays first. For missing authors, it asks the configured discovery relays for signed relay-list metadata, then queries the authors' write relays. Discovery requires one to eight explicit bootstrap URLs and is disabled by default.
 
-## Production checklist
+Discovered endpoints must use `wss://` and resolve to public addresses. Private and reserved destinations, redirects, and environment proxies are blocked for discovered endpoints. This means discovered traffic connects directly, even when `HTTP_PROXY` or `HTTPS_PROXY` is set; do not treat those variables as a privacy boundary.
 
-1. Leave the filter disabled until the relay list and seeds are settled.
-2. Enable it in `observe` mode. Confirm the collector produces a ready
-   snapshot and inspect the `Reputation observation` diagnostic records.
-3. Choose the TrustRank threshold from observed data. Remember that a zero
-   minimum only proves graph membership.
-4. Keep reputation diagnostics out of log-driven IP bans. The plugin uses
-   `Reputation observation` and `Event rejected by reputation policy` messages
-   without a `remote_ip` field, separate from ordinary `Event rejected by filter`
-   records. If using broader custom ban patterns, explicitly exclude
-   `ReputationFilter`: forwarding an unknown author's event is not IP abuse.
-5. Verify that autoban excludes `ReputationFilter` from strikes. The parent
-   pipeline does this automatically; custom integrations must do the same.
-6. Expect fail-open behavior during collection outages. Reputation is an
-   additional filter, not a replacement for bans, rate limits, or moderation.
+The collector supports NIP-42 authentication with a separate anonymous key per connection. It does not use your operator key and cannot satisfy paid or key-specific access restrictions.
 
-## Non-goals
+## Availability and reload
 
-- It is not a global or network-wide reputation system.
-- It is not Sybil-resistant, especially with a zero threshold.
-- It does not bypass other filters or moderation for trusted authors.
-- It does not implement payments or paid exemptions.
-- It does not fetch missing data on the event path.
+**Reputation fails open when no usable snapshot exists**, including initial collection and expiry after prolonged relay failures. Other filters continue to apply. Do not use reputation as your only access-control mechanism.
+
+Snapshots and follow lists persist in the plugin's Badger database. A matching, unexpired snapshot can be restored after restart. Failed refreshes retain the previous usable snapshot until it expires. Expiry is bounded by the oldest follow-list receipt plus `max_age`; recalculating cached data does not renew its age.
+
+Changes to `mode` or `min_trustrank` apply through hot reload without rebuilding the graph. Changing seeds or collector settings restarts collection; the previous graph is not used under a different configuration. Checks fail open until a matching usable snapshot is available. Changing `database.path` requires a plugin restart.
+
+Graph limits do not cap total disk usage: cached follow lists for authors that leave the graph are not automatically pruned. Monitor the database directory as part of relay maintenance.
+
+## Logging and bans
+
+Reputation diagnostics go to stderr as `Reputation observation` or `Event rejected by reputation policy`, separately from ordinary `Event rejected by filter` records. They have no `remote_ip` field: relaying an unknown author's event is not evidence of IP abuse.
+
+Keep these records out of Fail2Ban and other log-driven IP bans. If you use broad custom rules, explicitly exclude `ReputationFilter`. The plugin automatically excludes reputation rejections from autoban strikes.
